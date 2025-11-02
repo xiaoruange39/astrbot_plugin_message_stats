@@ -105,17 +105,76 @@ PERMISSION_REQUIREMENTS = {
 }
 
 def get_plugin_info():
-    """获取插件信息"""
+    """获取插件信息
+    
+    返回插件的基本信息，包括名称、版本、作者等元数据。
+    
+    Returns:
+        Dict[str, str]: 插件信息字典，包含以下键：
+            - name: 插件名称
+            - display_name: 显示名称
+            - description: 插件描述
+            - version: 版本号
+            - author: 作者
+            - entry_point: 入口点
+            - main_class: 主类名
+            
+    Example:
+        >>> info = get_plugin_info()
+        >>> print(info['name'])
+        'astrbot_plugin_message_stats'
+    """
     return PLUGIN_INFO.copy()
 
 def get_default_config():
-    """获取默认配置"""
+    """获取默认配置
+    
+    返回插件的默认配置参数，包括自动记录开关、显示人数和图片模式等。
+    
+    Returns:
+        Dict[str, Any]: 默认配置字典，包含以下键：
+            - auto_record_enabled: 是否启用自动记录（默认True）
+            - rand: 排行榜显示人数（默认20）
+            - if_send_pic: 是否发送图片（默认1，图片模式）
+            
+    Example:
+        >>> config = get_default_config()
+        >>> print(config['rand'])
+        20
+    """
     return DEFAULT_CONFIG.copy()
 
 def get_supported_commands():
-    """获取支持的命令列表"""
+    """获取支持的命令列表
+    
+    返回插件支持的所有命令列表，包括查看排行榜和设置相关命令。
+    
+    Returns:
+        List[str]: 支持的命令列表，包括：
+            - 排行榜命令：发言榜、水群榜、B话榜、今日发言榜、本周发言榜、本月发言榜
+            - 设置命令：发言榜设置、设置发言榜数量、设置发言榜图片
+            - 管理命令：清除发言榜单
+            
+    Example:
+        >>> commands = get_supported_commands()
+        >>> print(len(commands))
+        10
+    """
     return SUPPORTED_COMMANDS.copy()
 
 def get_permission_requirements():
-    """获取权限要求"""
+    """获取权限要求
+    
+    返回各命令的权限要求，区分管理员命令和公开命令。
+    
+    Returns:
+        Dict[str, List[str]]: 权限要求字典，包含：
+            - admin_only: 需要管理员权限的命令列表
+            - public: 公开的命令列表（所有群成员可用）
+            
+    Example:
+        >>> permissions = get_permission_requirements()
+        >>> print(permissions['admin_only'])
+        ['设置发言榜数量', '设置发言榜图片', '清除发言榜单']
+    """
     return PERMISSION_REQUIREMENTS.copy()

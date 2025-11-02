@@ -93,3 +93,7 @@ def get_default_template() -> str:
 def template_exists() -> bool:
     """检查模板文件是否存在"""
     return RANK_TEMPLATE_PATH.exists()
+
+def load_template() -> str:
+    """加载模板（兼容性函数）"""
+    return get_rank_template()
