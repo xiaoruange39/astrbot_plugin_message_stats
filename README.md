@@ -31,7 +31,7 @@
 ### 方式二：Git克隆
 ```bash
 cd /AstrBot/data/plugins/
-git clone https://github.com/your-repo/astrbot_plugin_message_stats.git
+git clone https://github.com/xiaoruange39/astrbot_plugin_message_stats.git
 ```
 
 ## 📖 使用方法
