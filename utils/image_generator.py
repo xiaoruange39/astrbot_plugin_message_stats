@@ -381,8 +381,8 @@ class ImageGenerator:
         if not users:
             return {'total_messages': 0, 'user_items': []}
         
-        # 预计算统计数据
-        total_messages = sum(user.total for user in users)
+        # 预计算统计数据 - 使用时间段内的发言数
+        total_messages = sum(getattr(user, 'display_total', user.total) for user in users)
         
         # 批量生成用户项目
         user_items = []
@@ -394,12 +394,14 @@ class ImageGenerator:
             if is_current_user:
                 current_user_found = True
             
+            # 使用时间段内的发言数
+            user_messages = getattr(user, 'display_total', user.total)
             user_items.append({
                 'rank': i + 1,
                 'nickname': user.nickname,
                 'avatar_url': self._get_avatar_url(user.user_id),
-                'total': user.total,
-                'percentage': (user.total / total_messages * 100) if total_messages > 0 else 0,
+                'total': user_messages,
+                'percentage': (user_messages / total_messages * 100) if total_messages > 0 else 0,
                 'last_date': user.last_date or "未知",
                 'is_current_user': is_current_user,
                 'is_separator': False
@@ -409,13 +411,15 @@ class ImageGenerator:
         if current_user_id and not current_user_found:
             current_user_data = next((user for user in users if user.user_id == current_user_id), None)
             if current_user_data:
-                current_rank = sum(1 for user in users if user.total > current_user_data.total) + 1
+                # 使用时间段内的发言数计算排名
+                current_user_messages = getattr(current_user_data, 'display_total', current_user_data.total)
+                current_rank = sum(1 for user in users if getattr(user, 'display_total', user.total) > current_user_messages) + 1
                 user_items.append({
                     'rank': current_rank,
                     'nickname': current_user_data.nickname,
                     'avatar_url': self._get_avatar_url(current_user_data.user_id),
-                    'total': current_user_data.total,
-                    'percentage': (current_user_data.total / total_messages * 100) if total_messages > 0 else 0,
+                    'total': current_user_messages,
+                    'percentage': (current_user_messages / total_messages * 100) if total_messages > 0 else 0,
                     'last_date': current_user_data.last_date or "未知",
                     'is_current_user': True,
                     'is_separator': True
@@ -449,11 +453,29 @@ class ImageGenerator:
             return self._render_fallback_template(template_content, template_data, user_items)
     
     def _render_fallback_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
-        """回退模板渲染方法（优化版）"""
+        """回退模板渲染方法（安全版本）
+        
+        当Jinja2不可用时的安全回退方案。
+        使用简单的字符串替换而不是format()，避免Jinja2语法冲突。
+        """
         # 使用生成器表达式优化内存使用
         user_items_html = ''.join(self._generate_user_item_html_safe(item) for item in user_items)
-        template_data['user_items'] = user_items_html
-        return template_content.format(**template_data)
+        
+        # 安全替换：避免Jinja2语法冲突
+        safe_content = template_content
+        for key, value in template_data.items():
+            if isinstance(value, str):
+                # 对字符串值进行HTML转义
+                safe_value = self._escape_html_safe(value)
+                safe_content = safe_content.replace('{{' + key + '}}', safe_value)
+            else:
+                # 对于非字符串值，直接替换
+                safe_content = safe_content.replace('{{' + key + '}}', str(value))
+        
+        # 替换user_items
+        safe_content = safe_content.replace('{{user_items}}', user_items_html)
+        
+        return safe_content
     
     def _generate_empty_html(self, group_info: GroupInfo, title: str) -> str:
         """生成空数据HTML（优化版本）"""
@@ -486,10 +508,29 @@ class ImageGenerator:
             if JINJA2_AVAILABLE and self.jinja_env and template_obj:
                 return template_obj.render(**template_data)
             else:
-                return template_content.format(**template_data)
+                # 使用安全的字符串替换而不是format()
+                safe_content = template_content
+                for key, value in template_data.items():
+                    if isinstance(value, str):
+                        safe_value = self._escape_html_safe(value)
+                        safe_content = safe_content.replace('{{' + key + '}}', safe_value)
+                    else:
+                        safe_content = safe_content.replace('{{' + key + '}}', str(value))
+                return safe_content
         except Exception as e:
             self.logger.error(f"空数据HTML模板渲染失败: {e}")
-            return template_content.format(**template_data)
+            # 回退到最简单的HTML
+            return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>发言排行榜</title>
+</head>
+<body>
+    <h1>发言排行榜</h1>
+    <p>暂无数据</p>
+</body>
+</html>"""
     
     def _get_empty_template(self) -> str:
         """获取空数据模板（简化版本）"""
@@ -906,28 +947,44 @@ class ImageGenerator:
             # Jinja2环境已经配置了缓存
             self.logger.info("批量生成优化已启用")
     
-    @lru_cache(maxsize=128)
     def _cached_escape_html(self, text: str) -> str:
         """带缓存的HTML转义"""
-        return self._escape_html_safe(text)
+        if not hasattr(self, '_escape_cache'):
+            self._escape_cache = {}
+        
+        if text in self._escape_cache:
+            return self._escape_cache[text]
+        
+        result = self._escape_html_safe(text)
+        self._escape_cache[text] = result
+        
+        # 限制缓存大小，防止内存泄漏
+        if len(self._escape_cache) > 128:
+            # 删除最旧的条目
+            oldest_key = next(iter(self._escape_cache))
+            del self._escape_cache[oldest_key]
+        
+        return result
     
     def _batch_process_user_items(self, users: List[UserData], current_user_id: Optional[str]) -> List[Dict[str, Any]]:
         """批量处理用户项目（进一步优化）"""
         if not users:
             return []
         
-        total_messages = sum(user.total for user in users)
+        total_messages = sum(getattr(user, 'display_total', user.total) for user in users)
         
         # 使用列表推导式和生成器表达式优化性能
         user_items = []
         for i, user in enumerate(users):
             is_current_user = current_user_id and user.user_id == current_user_id
+            # 使用时间段内的发言数
+            user_messages = getattr(user, 'display_total', user.total)
             user_items.append({
                 'rank': i + 1,
                 'nickname': self._cached_escape_html(user.nickname),
                 'avatar_url': self._get_avatar_url(user.user_id),
-                'total': user.total,
-                'percentage': (user.total / total_messages * 100) if total_messages > 0 else 0,
+                'total': user_messages,
+                'percentage': (user_messages / total_messages * 100) if total_messages > 0 else 0,
                 'last_date': self._cached_escape_html(user.last_date or "未知"),
                 'is_current_user': is_current_user,
                 'is_separator': False
@@ -937,13 +994,15 @@ class ImageGenerator:
         if current_user_id and not any(item['is_current_user'] for item in user_items):
             current_user_data = next((user for user in users if user.user_id == current_user_id), None)
             if current_user_data:
-                current_rank = sum(1 for user in users if user.total > current_user_data.total) + 1
+                # 使用时间段内的发言数计算排名
+                current_user_messages = getattr(current_user_data, 'display_total', current_user_data.total)
+                current_rank = sum(1 for user in users if getattr(user, 'display_total', user.total) > current_user_messages) + 1
                 user_items.append({
                     'rank': current_rank,
                     'nickname': self._cached_escape_html(current_user_data.nickname),
                     'avatar_url': self._get_avatar_url(current_user_data.user_id),
-                    'total': current_user_data.total,
-                    'percentage': (current_user_data.total / total_messages * 100) if total_messages > 0 else 0,
+                    'total': current_user_messages,
+                    'percentage': (current_user_messages / total_messages * 100) if total_messages > 0 else 0,
                     'last_date': self._cached_escape_html(current_user_data.last_date or "未知"),
                     'is_current_user': True,
                     'is_separator': True

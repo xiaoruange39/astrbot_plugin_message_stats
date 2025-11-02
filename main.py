@@ -603,22 +603,15 @@ class MessageStatsPlugin(Star):
         return None
     
     async def _find_user_in_members(self, members_info: List[Dict[str, Any]], user_id: str) -> Optional[str]:
-        """在群成员列表中查找用户昵称"""
+        """在群成员列表中查找用户昵称（优化版）"""
         # 检查缓存
         cache_key = f"nickname_{user_id}"
         if cache_key in self.user_nickname_cache:
             return self.user_nickname_cache[cache_key]
         
-        # 查找用户（优先使用字典方式，失败时回退到列表遍历）
+        # 使用字典方式快速查找（已优化，无需回退到列表遍历）
         members_dict = {str(m.get("user_id", "")): m for m in members_info if m.get("user_id")}
-        
         member = members_dict.get(user_id)
-        if not member:
-            # 回退到列表遍历
-            for m in members_info:
-                if str(m.get("user_id", "")) == user_id:
-                    member = m
-                    break
         
         if member:
             display_name = member.get("card") or member.get("nickname")
@@ -877,16 +870,19 @@ class MessageStatsPlugin(Star):
     
     def _generate_text_message(self, users: List[UserData], group_info: GroupInfo, title: str, config: PluginConfig) -> str:
         """生成文字消息"""
-        total_messages = sum(user.total for user in users)
+        # 计算时间段内的总发言数
+        total_messages = sum(getattr(user, 'display_total', user.total) for user in users)
         
-        # 排序并限制数量
-        sorted_users = sorted(users, key=lambda x: x.total, reverse=True)
+        # 排序并限制数量 - 使用时间段内的发言数进行排序
+        sorted_users = sorted(users, key=lambda x: getattr(x, 'display_total', x.total), reverse=True)
         top_users = sorted_users[:config.rand]
         
         msg = [f"{title}\n发言总数: {total_messages}\n━━━━━━━━━━━━━━\n"]
         
         for i, user in enumerate(top_users):
-            percentage = ((user.total / total_messages) * 100) if total_messages > 0 else 0
-            msg.append(f"第{i + 1}名:{user.nickname}·{user.total}次(占比{percentage:.2f}%)\n")
+            # 使用时间段内的发言数计算百分比
+            user_messages = getattr(user, 'display_total', user.total)
+            percentage = ((user_messages / total_messages) * 100) if total_messages > 0 else 0
+            msg.append(f"第{i + 1}名:{user.nickname}·{user_messages}次(占比{percentage:.2f}%)\n")
         
         return ''.join(msg)

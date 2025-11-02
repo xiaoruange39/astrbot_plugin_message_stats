@@ -36,39 +36,6 @@ class ValidationError(Exception):
     pass
 
 
-# 通用验证装饰器
-def validation_decorator(validator_func: Callable = None, *, required: bool = True, allow_none: bool = False):
-    """
-    通用验证装饰器，简化常见的验证逻辑
-    
-    Args:
-        validator_func: 具体的验证函数
-        required: 是否必须提供值
-        allow_none: 是否允许None值
-    """
-    def decorator(func):
-        @wraps(func)
-        def wrapper(value, *args, **kwargs):
-            if value is None:
-                if allow_none:
-                    return None
-                elif required:
-                    raise ValidationError(f"{func.__name__} 参数不能为空")
-                else:
-                    return None
-            
-            if value == "" and required:
-                raise ValidationError(f"{func.__name__} 参数不能为空")
-            
-            return func(value, *args, **kwargs)
-        return wrapper
-    
-    if validator_func is None:
-        return decorator
-    else:
-        return decorator(validator_func)
-
-
 class Validators:
     """数据验证器集合
     

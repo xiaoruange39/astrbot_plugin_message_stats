@@ -556,8 +556,11 @@ class DataManager:
                 try:
                     user = UserData.from_dict(user_data)
                     users.append(user)
+                except (KeyError, ValueError, TypeError) as e:
+                    self.logger.warning(f"跳过无效用户数据（缺少字段或类型错误）: {e}")
+                    continue
                 except Exception as e:
-                    self.logger.warning(f"跳过无效用户数据: {e}")
+                    self.logger.warning(f"跳过无效用户数据（未知错误）: {e}")
                     continue
             
             await self.save_group_data(group_id, users)
@@ -571,50 +574,89 @@ class DataManager:
     # ========== 清理和维护 ==========
     
     async def cleanup_old_data(self, days: int = 30):
-        """清理旧数据"""
+        """清理旧数据 - 性能优化版本"""
         try:
             cutoff_date = datetime.now().date() - timedelta(days=days)
+            cleaned_files = 0
+            total_users_removed = 0
             
-            for group_file in self.groups_dir.glob("*.json"):
+            # 批量处理文件以提高性能
+            group_files = list(self.groups_dir.glob("*.json"))
+            
+            for group_file in group_files:
                 try:
                     # 读取数据
                     async with aiofiles.open(group_file, 'r', encoding='utf-8') as f:
                         content = await f.read()
                         data_list = json.loads(content)
                     
-                    # 过滤旧数据
+                    # 优化：直接处理字典数据，避免不必要的序列化/反序列化
                     filtered_users = []
+                    users_removed = 0
+                    
                     for user_data in data_list:
-                        user = UserData.from_dict(user_data)
+                        # 优化：直接从字典中获取最后发言日期进行快速检查
+                        last_date_str = user_data.get('last_date')
                         
-                        # 检查用户是否在截止日期后有活动
-                        has_recent_activity = False
-                        for hist_date in user.history:
-                            if hist_date.to_date() >= cutoff_date:
+                        if last_date_str:
+                            try:
+                                # 快速日期比较，避免解析整个历史记录
+                                last_date = datetime.strptime(last_date_str, '%Y-%m-%d').date()
+                                has_recent_activity = last_date >= cutoff_date
+                            except ValueError:
+                                # 日期格式错误，保留用户数据
                                 has_recent_activity = True
-                                break
+                        else:
+                            # 没有最后发言日期，检查总消息数
+                            has_recent_activity = user_data.get('total', 0) >= 10
                         
                         # 保留有最近活动的用户或总消息数较高的用户
-                        if has_recent_activity or user.total >= 10:
+                        if has_recent_activity or user_data.get('total', 0) >= 10:
                             filtered_users.append(user_data)
+                        else:
+                            users_removed += 1
                     
-                    # 保存过滤后的数据
-                    if filtered_users != data_list:
+                    # 只在有变化时保存文件
+                    if len(filtered_users) != len(data_list):
                         async with aiofiles.open(group_file, 'w', encoding='utf-8') as f:
                             await f.write(json.dumps(filtered_users, ensure_ascii=False, indent=2))
                         
-                        self.logger.info(f"清理了 {group_file.name} 的旧数据")
+                        cleaned_files += 1
+                        total_users_removed += users_removed
+                        self.logger.info(f"清理了 {group_file.name}，移除了 {users_removed} 个用户")
                 
-                except Exception as e:
+                except (json.JSONDecodeError, IOError) as e:
                     self.logger.error(f"清理文件 {group_file} 失败: {e}")
+                except (OSError, PermissionError) as e:
+                    self.logger.error(f"清理文件 {group_file} 时发生系统错误: {e}")
+                except Exception as e:
+                    self.logger.error(f"清理文件 {group_file} 时发生未知错误: {e}")
             
-            # 清理图片缓存
-            for cache_file in self.cache_dir.glob("*.png"):
-                file_time = datetime.fromtimestamp(cache_file.stat().st_mtime).date()
-                if file_time < cutoff_date:
-                    cache_file.unlink()
+            # 优化：批量清理图片缓存
+            cache_files = list(self.cache_dir.glob("*.png"))
+            cleaned_cache_files = 0
             
-            self.logger.info("旧数据清理完成")
+            for cache_file in cache_files:
+                try:
+                    file_time = datetime.fromtimestamp(cache_file.stat().st_mtime).date()
+                    if file_time < cutoff_date:
+                        cache_file.unlink()
+                        cleaned_cache_files += 1
+                except (OSError, PermissionError) as e:
+                    self.logger.warning(f"删除缓存文件 {cache_file} 失败: {e}")
+            
+            # 记录清理结果
+            if cleaned_files > 0:
+                self.logger.info(f"数据清理完成：处理了 {len(group_files)} 个文件，清理了 {cleaned_files} 个文件，移除了 {total_users_removed} 个用户")
+            if cleaned_cache_files > 0:
+                self.logger.info(f"缓存清理完成：删除了 {cleaned_cache_files} 个过期缓存文件")
+            
+            if cleaned_files == 0 and cleaned_cache_files == 0:
+                self.logger.info("数据清理完成：无需清理的数据")
         
-        except (IOError, OSError) as e:
-            self.logger.error(f"清理旧数据失败: {e}")
+        except (IOError, OSError, PermissionError) as e:
+            self.logger.error(f"数据清理过程中发生系统错误: {e}")
+            raise
+        except Exception as e:
+            self.logger.error(f"数据清理过程中发生未知错误: {e}")
+            raise

@@ -10,6 +10,7 @@ from enum import Enum
 import json
 import aiofiles
 import os
+import asyncio
 
 
 
@@ -190,7 +191,8 @@ class UserData:
     def add_message(self, message_date: MessageDate):
         """添加消息记录
         
-        增加用户的发言计数并记录发言日期。自动避免同一天重复添加。
+        增加用户的发言计数并记录发言日期。每次发言都会记录到历史中，
+        保持total字段与实际发言次数的一致性。
         
         Args:
             message_date (MessageDate): 消息日期对象
@@ -206,9 +208,8 @@ class UserData:
         """
         self.total += 1
         
-        # 检查是否是同一天，避免重复添加
-        if not self.history or self.history[-1] != message_date:
-            self.history.append(message_date)
+        # 每次发言都添加到历史记录中
+        self.history.append(message_date)
         
         # 更新最后发言日期
         self.last_date = str(message_date)
@@ -552,8 +553,8 @@ async def save_json_file(file_path: str, data: Dict[str, Any]) -> None:
         >>> await save_json_file("output.json", data)
         >>> print("保存完成")
     """
-    # 确保目录存在
-    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    # 确保目录存在（异步版本，避免阻塞事件循环）
+    await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
     
     async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
         await f.write(json.dumps(data, ensure_ascii=False, indent=2))
