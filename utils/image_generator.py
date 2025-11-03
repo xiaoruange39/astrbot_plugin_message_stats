@@ -113,7 +113,11 @@ class ImageGenerator:
         self._cache_misses = 0
         
         # 初始化Jinja2环境
-        asyncio.create_task(self._init_jinja2_env())
+        try:
+            asyncio.create_task(self._init_jinja2_env())
+        except Exception as e:
+            self.logger.error(f"初始化Jinja2环境失败: {e}")
+            self.jinja_env = None
     
     async def _init_jinja2_env(self):
         """初始化Jinja2环境
@@ -154,8 +158,9 @@ class ImageGenerator:
         """预加载模板文件到缓存"""
         try:
             if self.template_path.exists():
-                with open(self.template_path, 'r', encoding='utf-8') as f:
-                    template_content = f.read()
+                # 使用异步文件读取优化
+                loop = asyncio.get_event_loop()
+                template_content = await loop.run_in_executor(None, self._read_file_sync, self.template_path)
                 
                 # 缓存模板内容
                 template_hash = self._get_template_hash(template_content)
@@ -412,7 +417,7 @@ class ImageGenerator:
             current_user_data = next((user for user in users if user.user_id == current_user_id), None)
             if current_user_data:
                 # 使用时间段内的发言数计算排名
-                current_user_messages = getattr(current_user_data, 'display_total', current_user_data.total)
+                current_user_messages = getattr(current_user_data, 'display_total', current_user_data.message_count)
                 current_rank = sum(1 for user in users if getattr(user, 'display_total', user.message_count) > current_user_messages) + 1
                 user_items.append({
                     'rank': current_rank,
@@ -644,6 +649,11 @@ class ImageGenerator:
         if not isinstance(text, str):
             text = str(text)
         return html.escape(text, quote=True)
+    
+    def _read_file_sync(self, file_path: Path) -> str:
+        """同步文件读取（用于线程池执行）"""
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return f.read()
 
     def _validate_url_safe(self, url: str) -> str:
         """验证并清理URL"""
@@ -672,8 +682,8 @@ class ImageGenerator:
                 if JINJA2_AVAILABLE and isinstance(cached_template, Template):
                     # 重新从文件加载原始字符串内容
                     if self.template_path.exists():
-                        with open(self.template_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
+                        loop = asyncio.get_event_loop()
+                        content = await loop.run_in_executor(None, self._read_file_sync, self.template_path)
                         return content
                     else:
                         default_template = await self._get_default_template()
@@ -683,8 +693,8 @@ class ImageGenerator:
             
             # 缓存未命中，从文件加载
             if self.template_path.exists():
-                with open(self.template_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                loop = asyncio.get_event_loop()
+                content = await loop.run_in_executor(None, self._read_file_sync, self.template_path)
                 
                 # 检查模板是否使用Jinja2语法
                 if '{{' in content or '{%' in content:
@@ -857,7 +867,7 @@ class ImageGenerator:
         if cached_default:
             return cached_default['content']
         
-        # 创建优化的默认模板
+        # 创建优化的默认模板（使用简单占位符）
         default_template = """
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -866,43 +876,43 @@ class ImageGenerator:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ title }}</title>
     <style>
-        * {{
+        * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
-        }}
-        body {{
+        }
+        body {
             font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
             background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
             padding: 30px;
             min-height: 100vh;
-        }}
-        .title {{
+        }
+        .title {
             text-align: center;
             font-size: 28px;
             color: #1F2937;
             margin-bottom: 25px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
-        }}
-        .user-list {{
+        }
+        .user-list {
             max-width: 800px;
             margin: 0 auto;
             background: rgba(255,255,255,0.9);
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             padding: 20px;
-        }}
-        .user-item {{
+        }
+        .user-item {
             display: flex;
             align-items: center;
             padding: 15px;
             border-bottom: 1px solid #E5E7EB;
             transition: transform 0.2s;
-        }}
-        .user-item:hover {{
+        }
+        .user-item:hover {
             transform: translateX(10px);
-        }}
-        .user-item-current {{
+        }
+        .user-item-current {
             display: flex;
             align-items: center;
             padding: 15px;
@@ -910,11 +920,11 @@ class ImageGenerator:
             transition: transform 0.2s;
             background-color: #F3E8FF;
             border-radius: 12px;
-        }}
-        .user-item-current:hover {{
+        }
+        .user-item-current:hover {
             transform: translateX(10px);
-        }}
-        .rank {{
+        }
+        .rank {
             width: 50px;
             height: 50px;
             border-radius: 50%;
@@ -926,8 +936,8 @@ class ImageGenerator:
             font-size: 18px;
             font-weight: bold;
             margin-right: 20px;
-        }}
-        .rank-current {{
+        }
+        .rank-current {
             width: 50px;
             height: 50px;
             border-radius: 50%;
@@ -939,73 +949,56 @@ class ImageGenerator:
             font-size: 18px;
             font-weight: bold;
             margin-right: 20px;
-        }}
-        .avatar {{
+        }
+        .avatar {
             width: 60px;
             height: 60px;
             border-radius: 50%;
             margin: 0 20px;
             border: 3px solid #3B82F6;
             box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }}
-        .info {{
+        }
+        .info {
             flex: 1;
             display: flex;
             justify-content: space-between;
             align-items: center;
-        }}
-        .name-date {{
+        }
+        .name-date {
             display: flex;
             flex-direction: column;
-        }}
-        .nickname {{
+        }
+        .nickname {
             font-size: 20px;
             color: #1F2937;
             font-weight: 500;
             line-height: 1.2;
-        }}
-        .date {{
+        }
+        .date {
             color: #6B7280;
             font-size: 14px;
             margin-top: 4px;
-        }}
-        .stats {{
+        }
+        .stats {
             text-align: right;
             font-size: 18px;
             min-width: 120px;
-        }}
-        .count {{
+        }
+        .count {
             color: #EF4444;
             font-weight: bold;
-        }}
-        .percentage {{
+        }
+        .percentage {
             color: #22C55E;
             font-size: 16px;
-        }}
+        }
     </style>
 </head>
 <body>
     <div class="title">{{ group_name }}[{{ group_id }}]</div>
     <div class="title">{{ title }}</div>
     <div class="user-list">
-        {% for item in user_items %}
-        <div class="{{ 'user-item-current' if item.is_current_user else 'user-item' }}" 
-             style="{{ 'margin-top: 20px; border-top: 2px dashed #bdc3c7;' if item.is_separator else '' }}">
-            <div class="{{ 'rank-current' if item.is_current_user else 'rank' }}" 
-                 style="color: #3B82F6; font-weight: bold; font-size: 36px;">#{{ item.rank }}</div>
-            <img class="avatar" src="{{ item.avatar_url }}" style="border-color: #ffffff;" />
-            <div class="info">
-                <div class="name-date">
-                    <div class="nickname">{{ item.nickname }}</div>
-                    <div class="date">最近发言: {{ item.last_date }}</div>
-                </div>
-                <div class="stats">
-                    <div class="count">{{ item.total }} 次</div>
-                    <div class="percentage">({{ "%.2f"|format(item.percentage) }}%)</div>
-                </div>
-            </div>
-        </div>
-        {% endfor %}
+        {{ user_items }}
     </div>
 </body>
 </html>
@@ -1135,7 +1128,7 @@ class ImageGenerator:
             current_user_data = next((user for user in users if user.user_id == current_user_id), None)
             if current_user_data:
                 # 使用时间段内的发言数计算排名
-                current_user_messages = getattr(current_user_data, 'display_total', current_user_data.total)
+                current_user_messages = getattr(current_user_data, 'display_total', current_user_data.message_count)
                 current_rank = sum(1 for user in users if getattr(user, 'display_total', user.message_count) > current_user_messages) + 1
                 user_items.append({
                     'rank': current_rank,

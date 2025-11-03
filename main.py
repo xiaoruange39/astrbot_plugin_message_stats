@@ -15,7 +15,7 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger as astrbot_logger
 import astrbot.api.message_components as Comp
-from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+
 
 from .utils.data_manager import DataManager
 from .utils.image_generator import ImageGenerator, ImageGenerationError
@@ -488,24 +488,24 @@ class MessageStatsPlugin(Star):
     # ========== 私有方法 ==========
     
     async def _get_user_display_name(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
-        """获取用户的群昵称,优先使用群昵称,其次使用QQ昵称（重构版 - 使用统一缓存逻辑）"""
-        # 警告: 此处依赖了 Aiocqhttp 的特定事件实现，以便调用底层 API。
-        # 在其他平台适配器上可能无法获取详细的群成员信息。
-        if not isinstance(event, AiocqhttpMessageEvent):
+        """获取用户的群昵称,优先使用群昵称,其次使用QQ昵称（重构版 - 跨平台兼容）"""
+        # 优先使用统一的昵称获取逻辑
+        nickname = await self._get_user_nickname_unified(event, group_id, user_id)
+        
+        # 如果统一逻辑失败，使用备用方案
+        if nickname == f"用户{user_id}":
             return await self._get_fallback_nickname(event, user_id)
         
-        # 使用统一的昵称获取逻辑
-        return await self._get_user_nickname_unified(event, group_id, user_id)
+        return nickname
     
     async def _get_user_nickname_unified(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
-        """统一的用户昵称获取方法 - 按顺序检查各级缓存
+        """统一的用户昵称获取方法 - 简化版缓存查找逻辑
         
-        整合了分散的缓存逻辑，提供清晰的查找流程：
+        按优先级检查缓存，提供清晰的查找流程：
         1. 检查昵称缓存
         2. 检查群成员字典缓存  
-        3. 检查群成员列表缓存
-        4. 从API获取并填充所有缓存
-        5. 使用备用方案
+        3. 从API获取并缓存
+        4. 返回默认昵称
         
         Args:
             event (AstrMessageEvent): 消息事件对象
@@ -513,65 +513,45 @@ class MessageStatsPlugin(Star):
             user_id (str): 用户ID
             
         Returns:
-            str: 用户的显示昵称
+            str: 用户的显示昵称，如果都失败则返回 "用户{user_id}"
         """
+        nickname_cache_key = f"nickname_{user_id}"
+        
+        # 步骤1: 检查昵称缓存（最高优先级）
+        if nickname_cache_key in self.user_nickname_cache:
+            return self.user_nickname_cache[nickname_cache_key]
+        
+        # 步骤2: 检查群成员字典缓存
+        dict_cache_key = f"group_members_dict_{group_id}"
+        if dict_cache_key in self.group_members_dict_cache:
+            members_dict = self.group_members_dict_cache[dict_cache_key]
+            if user_id in members_dict:
+                member = members_dict[user_id]
+                display_name = member.get("card") or member.get("nickname")
+                if display_name:
+                    self.user_nickname_cache[nickname_cache_key] = display_name
+                    return display_name
+        
+        # 步骤3: 从API获取群成员信息
         try:
-            # 步骤1: 检查昵称缓存（最高优先级）
-            nickname_cache_key = f"nickname_{user_id}"
-            if nickname_cache_key in self.user_nickname_cache:
-                return self.user_nickname_cache[nickname_cache_key]
-            
-            # 步骤2: 检查群成员字典缓存
-            dict_cache_key = f"group_members_dict_{group_id}"
-            if dict_cache_key in self.group_members_dict_cache:
-                members_dict = self.group_members_dict_cache[dict_cache_key]
-                if user_id in members_dict:
-                    member = members_dict[user_id]
-                    display_name = member.get("card") or member.get("nickname")
-                    if display_name:
-                        # 填充昵称缓存
-                        self.user_nickname_cache[nickname_cache_key] = display_name
-                        return display_name
-            
-            # 步骤3: 检查群成员列表缓存
-            list_cache_key = f"group_members_{group_id}"
-            if list_cache_key in self.group_members_cache:
-                members_info = self.group_members_cache[list_cache_key]
-                # 在成员列表中查找
-                for member in members_info:
-                    if str(member.get("user_id", "")) == user_id:
-                        display_name = member.get("card") or member.get("nickname")
-                        if display_name:
-                            # 填充所有相关缓存
-                            self.user_nickname_cache[nickname_cache_key] = display_name
-                            # 重建字典缓存以备后续快速查找
-                            members_dict = {str(m.get("user_id", "")): m for m in members_info if m.get("user_id")}
-                            self.group_members_dict_cache[dict_cache_key] = members_dict
-                            return display_name
-                # 如果在缓存的成员列表中没找到，说明可能已过期，继续下一步
-            
-            # 步骤4: 从API获取群成员信息并填充所有缓存
             members_info = await self._fetch_group_members_from_api(event, group_id)
             if members_info:
                 # 重建字典缓存
                 members_dict = {str(m.get("user_id", "")): m for m in members_info if m.get("user_id")}
                 self.group_members_dict_cache[dict_cache_key] = members_dict
                 
-                # 在新获取的成员列表中查找
+                # 查找用户
                 if user_id in members_dict:
                     member = members_dict[user_id]
                     display_name = member.get("card") or member.get("nickname")
                     if display_name:
-                        # 填充昵称缓存
                         self.user_nickname_cache[nickname_cache_key] = display_name
                         return display_name
-            
-            # 步骤5: 所有查找失败，使用备用方案
-            return await self._get_fallback_nickname(event, user_id)
-            
-        except (ValueError, TypeError, KeyError, AttributeError) as e:
-            self.logger.warning(f"统一昵称获取失败: {e}")
-            return await self._get_fallback_nickname(event, user_id)
+        except Exception as e:
+            self.logger.warning(f"获取群成员信息失败: {e}")
+        
+        # 步骤4: 返回默认昵称
+        return f"用户{user_id}"
     
     async def _get_fallback_nickname(self, event: AstrMessageEvent, user_id: str) -> str:
         """获取备用昵称
@@ -756,8 +736,15 @@ class MessageStatsPlugin(Star):
                 yield event.plain_result("这个时间段还没有人发言呢~")
                 return
             
-            # 对数据进行排序，优先使用display_total（时间段内发言数），否则使用message_count（总发言数）
-            filtered_data = sorted(filtered_data, key=lambda x: getattr(x, 'display_total', x.message_count), reverse=True)
+            # 对数据进行排序，使用明确的排序键
+            def get_sort_key(user_data):
+                # 如果有display_total（时间段内发言数），优先使用
+                if hasattr(user_data, 'display_total'):
+                    return user_data.display_total
+                # 否则使用message_count（总发言数）
+                return user_data.message_count
+            
+            filtered_data = sorted(filtered_data, key=get_sort_key, reverse=True)
             
             # 获取配置
             config = await self.data_manager.get_config()
@@ -799,7 +786,13 @@ class MessageStatsPlugin(Star):
                 text_msg = self._generate_text_message(filtered_data, group_info, title, config)
                 yield event.plain_result(text_msg)
         
-        except (ValueError, TypeError, KeyError) as e:
+        except IOError as e:
+            self.logger.error(f"文件操作失败: {e}")
+            yield event.plain_result("文件操作失败,请检查权限")
+        except AttributeError as e:
+            self.logger.error(f"属性访问错误: {e}")
+            yield event.plain_result("数据格式错误,请联系管理员")
+        except Exception as e:
             self.logger.error(f"显示排行榜失败: {e}")
             yield event.plain_result("生成排行榜失败,请稍后重试")
     

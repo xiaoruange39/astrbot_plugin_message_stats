@@ -14,6 +14,7 @@ import asyncio
 from datetime import datetime
 from cachetools import TTLCache
 from astrbot.api import logger as astrbot_logger
+from collections import defaultdict
 
 from .models import UserData, PluginConfig, MessageDate
 
@@ -61,6 +62,9 @@ class DataManager:
         # 缓存设置 - 优化TTL设置
         self.data_cache = TTLCache(maxsize=1000, ttl=300)  # 5分钟缓存，提高性能
         self.config_cache = TTLCache(maxsize=10, ttl=60)  # 1分钟缓存，平衡实时性和性能
+        
+        # 群组级别的锁机制，防止并发安全问题
+        self._group_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         
         # 确保目录存在
         self._ensure_directories()
@@ -323,6 +327,7 @@ class DataManager:
         """更新用户消息统计
         
         异步更新指定用户在群组中的消息统计，包括新增用户和更新现有用户。
+        使用基于群组ID的锁机制防止并发安全问题。
         
         Args:
             group_id (str): 群组ID
@@ -341,47 +346,51 @@ class DataManager:
         if not user_id.isdigit():
             raise ValueError(f"用户ID必须是数字字符串，当前值: {user_id}")
         
-        try:
-            # 获取现有数据
-            users = await self.get_group_data(group_id)
-            current_timestamp = int(datetime.now().timestamp())
-            
-            # 查找用户
-            user_found = False
-            for user in users:
-                if user.user_id == user_id:
-                    # 更新现有用户 - 使用add_message方法正确记录历史
+        # 获取群组级别的锁，确保同一群组的数据操作串行化
+        group_lock = self._group_locks[group_id]
+        
+        async with group_lock:
+            try:
+                # 获取现有数据
+                users = await self.get_group_data(group_id)
+                current_timestamp = int(datetime.now().timestamp())
+                
+                # 查找用户
+                user_found = False
+                for user in users:
+                    if user.user_id == user_id:
+                        # 更新现有用户 - 使用add_message方法正确记录历史
+                        today = datetime.now().date()
+                        message_date = MessageDate.from_date(today)
+                        user.add_message(message_date)
+                        user.last_message_time = current_timestamp
+                        if user.first_message_time is None:
+                            user.first_message_time = current_timestamp
+                        user_found = True
+                        break
+                
+                # 如果用户不存在，创建新用户
+                if not user_found:
+                    new_user = UserData(
+                        user_id=user_id,
+                        nickname=nickname,
+                        message_count=1,
+                        first_message_time=current_timestamp,
+                        last_message_time=current_timestamp
+                    )
+                    # 为新用户添加第一条消息记录
                     today = datetime.now().date()
                     message_date = MessageDate.from_date(today)
-                    user.add_message(message_date)
-                    user.last_message_time = current_timestamp
-                    if user.first_message_time is None:
-                        user.first_message_time = current_timestamp
-                    user_found = True
-                    break
-            
-            # 如果用户不存在，创建新用户
-            if not user_found:
-                new_user = UserData(
-                    user_id=user_id,
-                    nickname=nickname,
-                    message_count=1,
-                    first_message_time=current_timestamp,
-                    last_message_time=current_timestamp
-                )
-                # 为新用户添加第一条消息记录
-                today = datetime.now().date()
-                message_date = MessageDate.from_date(today)
-                new_user.add_message(message_date)
-                users.append(new_user)
-            
-            # 保存更新后的数据
-            await self.save_group_data(group_id, users)
-            return True
-            
-        except Exception as e:
-            self.logger.error(f"更新用户 {user_id} 消息统计失败: {e}")
-            return False
+                    new_user.add_message(message_date)
+                    users.append(new_user)
+                
+                # 保存更新后的数据
+                await self.save_group_data(group_id, users)
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"更新用户 {user_id} 消息统计失败: {e}")
+                return False
     
     async def clear_group_data(self, group_id: str) -> bool:
         """清空群组数据
@@ -763,7 +772,7 @@ class DataManager:
             users = await self.get_group_data(group_id)
             return {
                 "group_id": group_id,
-                "export_time": asyncio.get_event_loop().time(),
+                "export_time": asyncio.get_running_loop().time(),
                 "users": [user.to_dict() for user in users],
                 "statistics": await self.get_group_statistics(group_id)
             }
