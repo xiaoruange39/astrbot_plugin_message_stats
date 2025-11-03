@@ -241,9 +241,6 @@ class MessageStatsPlugin(Star):
             user_id = Validators.validate_user_id(user_id)
             nickname = Validators.validate_nickname(nickname)
             
-            # 获取当前日期
-            today = date.today()
-            
             # 直接使用data_manager更新用户消息
             success = await self.data_manager.update_user_message(group_id, user_id, nickname)
             
@@ -395,10 +392,10 @@ class MessageStatsPlugin(Star):
             # 验证模式
             mode = args[0].lower()
             if mode in ['1', 'true', '开', 'on', 'yes']:
-                if_send_pic = 1
+                send_pic = 1
                 mode_text = "图片模式"
             elif mode in ['0', 'false', '关', 'off', 'no']:
-                if_send_pic = 0
+                send_pic = 0
                 mode_text = "文字模式"
             else:
                 yield event.plain_result("模式参数错误！可用:1/true/开 或 0/false/关")
@@ -406,7 +403,7 @@ class MessageStatsPlugin(Star):
             
             # 保存配置
             config = await self.data_manager.get_config()
-            config.send_pic = if_send_pic
+            config.send_pic = send_pic
             await self.data_manager.save_config(config)
             
             yield event.plain_result(f"排行榜显示模式已设置为 {mode_text}！")

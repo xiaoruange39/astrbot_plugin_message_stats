@@ -838,17 +838,17 @@ class DataManager:
             self.logger.error(f"获取群组 {group_id} 排行榜时发生未知错误: {e}")
             return []
     
-    async def get_users_by_time_period(self, group_id: str, period: str) -> List[UserData]:
+    async def get_users_by_time_period(self, group_id: str, period: str) -> List[tuple]:
         """按时间段获取用户
         
-        根据时间段获取活跃用户列表。
+        根据时间段获取活跃用户列表，返回用户对象和该时间段内消息数的元组列表。
         
         Args:
             group_id (str): 群组ID
             period (str): 时间段，'day', 'week', 'month'
             
         Returns:
-            List[UserData]: 符合条件的用户列表（按消息数降序排序）
+            List[tuple]: 包含用户对象和消息数的元组列表，格式为[(UserData, count)]，按消息数降序排序
             
         Raises:
             ValueError: 当period参数无效时抛出
@@ -863,40 +863,33 @@ class DataManager:
             current_date = datetime.now().date()
             
             if period == 'day':
-                # 今日用户（活跃用户）
+                # 今日用户
                 start_date = current_date
                 end_date = current_date
             elif period == 'week':
-                # 本周用户（过去7天）
-                start_date = current_date - timedelta(days=6)
+                # 本周用户（从周一开始到当前日期）
+                days_since_monday = current_date.weekday()
+                start_date = current_date - timedelta(days=days_since_monday)
                 end_date = current_date
             elif period == 'month':
-                # 本月用户（过去30天）
-                start_date = current_date - timedelta(days=29)
+                # 本月用户（从月初到当前日期）
+                start_date = current_date.replace(day=1)
                 end_date = current_date
             else:
                 raise ValueError(f"无效的时间段参数: {period}，支持的值为: 'day', 'week', 'month'")
             
-            # 过滤在指定时间段内有发言的用户
-            filtered_users = []
+            # 过滤在指定时间段内有发言的用户，返回用户和计数的元组列表
+            user_count_pairs = []
             for user in users:
                 message_count_in_period = user.get_message_count_in_period(start_date, end_date)
                 if message_count_in_period > 0:
-                    # 为用户创建临时对象，设置period_message_count属性用于排序
-                    temp_user = user
-                    temp_user.period_message_count = message_count_in_period
-                    filtered_users.append(temp_user)
+                    user_count_pairs.append((user, message_count_in_period))
             
             # 按时间段内的消息数降序排序
-            filtered_users.sort(key=lambda x: x.period_message_count, reverse=True)
+            user_count_pairs.sort(key=lambda x: x[1], reverse=True)
             
-            # 移除临时属性
-            for user in filtered_users:
-                if hasattr(user, 'period_message_count'):
-                    delattr(user, 'period_message_count')
-            
-            self.logger.debug(f"群组 {group_id} 在时间段 {period} 内找到 {len(filtered_users)} 个活跃用户")
-            return filtered_users
+            self.logger.debug(f"群组 {group_id} 在时间段 {period} 内找到 {len(user_count_pairs)} 个活跃用户")
+            return user_count_pairs
             
         except ValueError as e:
             # 参数错误，直接抛出

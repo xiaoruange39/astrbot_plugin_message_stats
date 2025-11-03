@@ -381,7 +381,7 @@ class PluginConfig:
             Dict[str, Any]: 包含配置数据的字典，包括：
                 - is_admin_restricted: 管理员限制设置
                 - rand: 排行榜显示人数
-                - if_send_pic: 图片模式设置
+                - send_pic: 图片模式设置
                 
         Example:
             >>> config = PluginConfig()
@@ -392,7 +392,7 @@ class PluginConfig:
         return {
             "is_admin_restricted": self.is_admin_restricted,
             "rand": self.rand,
-            "if_send_pic": self.send_pic
+            "send_pic": self.send_pic
         }
     
     @classmethod
@@ -408,7 +408,7 @@ class PluginConfig:
             PluginConfig: 对应的PluginConfig实例
             
         Example:
-            >>> data = {"rand": 15, "if_send_pic": 0}
+            >>> data = {"rand": 15, "send_pic": 0}
             >>> config = PluginConfig.from_dict(data)
             >>> print(config.rand)
             15
@@ -416,7 +416,7 @@ class PluginConfig:
         return cls(
             is_admin_restricted=data.get("is_admin_restricted", 0),
             rand=data.get("rand", 20),
-            send_pic=data.get("if_send_pic", 1)
+            send_pic=data.get("send_pic", 1)
         )
 
 

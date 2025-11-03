@@ -417,7 +417,7 @@ class ImageGenerator:
             user_items.append({
                 'rank': i + 1,
                 'nickname': user.nickname,
-                'avatar_url': self._get_avatar_url(user.user_id),
+                'avatar_url': self._get_avatar_url(user.user_id, "qq"),
                 'total': user_messages,
                 'percentage': (user_messages / total_messages * 100) if total_messages > 0 else 0,
                 'last_date': user.last_date or "未知",
@@ -435,7 +435,7 @@ class ImageGenerator:
                 user_items.append({
                     'rank': current_rank,
                     'nickname': current_user_data.nickname,
-                    'avatar_url': self._get_avatar_url(current_user_data.user_id),
+                    'avatar_url': self._get_avatar_url(current_user_data.user_id, "qq"),
                     'total': current_user_messages,
                     'percentage': (current_user_messages / total_messages * 100) if total_messages > 0 else 0,
                     'last_date': current_user_data.last_date or "未知",
@@ -687,7 +687,7 @@ class ImageGenerator:
         
         # 如果头像URL无效，使用默认头像
         if not safe_avatar_url:
-            safe_avatar_url = self._get_avatar_url(str(item_data.get('user_id', '0')))
+            safe_avatar_url = self._get_avatar_url(str(item_data.get('user_id', '0')), "qq")
         
         return {
             'nickname': safe_nickname,
@@ -719,9 +719,26 @@ class ImageGenerator:
         url = url.replace('<', '').replace('>', '').replace('"', '').replace("'", '')
         return url
 
-    def _get_avatar_url(self, user_id: str) -> str:
-        """获取用户头像URL"""
-        return f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
+    def _get_avatar_url(self, user_id: str, platform: str = "qq") -> str:
+        """获取用户头像URL
+        
+        Args:
+            user_id (str): 用户ID
+            platform (str): 平台类型，支持 'qq', 'telegram', 'discord' 等
+            
+        Returns:
+            str: 头像URL
+        """
+        # 支持多种平台的头像服务
+        avatar_services = {
+            "qq": "https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640",
+            "telegram": "https://telegram.org/img/t_logo.png",  # Telegram默认头像
+            "discord": "https://cdn.discordapp.com/embed/avatars/{avatar_id}.png",  # Discord默认头像
+            "default": "https://via.placeholder.com/640x640?text=Avatar"  # 通用默认头像
+        }
+        
+        service_url = avatar_services.get(platform, avatar_services["default"])
+        return service_url.format(user_id=user_id, avatar_id=int(user_id) % 5)
     
     async def _load_html_template(self) -> str:
         """加载HTML模板（使用缓存优化）"""
