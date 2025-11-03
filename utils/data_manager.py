@@ -354,8 +354,11 @@ class DataManager:
             user_found = False
             for user in users:
                 if user.user_id == user_id:
-                    # 更新现有用户
-                    user.message_count += 1
+                    # 更新现有用户 - 使用add_message方法正确记录历史
+                    from .models import MessageDate
+                    today = datetime.now().date()
+                    message_date = MessageDate.from_date(today)
+                    user.add_message(message_date)
                     user.last_message_time = current_timestamp
                     if user.first_message_time is None:
                         user.first_message_time = current_timestamp
@@ -371,6 +374,11 @@ class DataManager:
                     first_message_time=current_timestamp,
                     last_message_time=current_timestamp
                 )
+                # 为新用户添加第一条消息记录
+                from .models import MessageDate
+                today = datetime.now().date()
+                message_date = MessageDate.from_date(today)
+                new_user.add_message(message_date)
                 users.append(new_user)
             
             # 保存更新后的数据
