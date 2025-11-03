@@ -162,10 +162,10 @@ class ImageGenerator:
     async def _preload_templates(self):
         """预加载模板文件到缓存"""
         try:
-            if self.template_path.exists():
+            if await aiofiles.os.path.exists(self.template_path):
                 # 使用异步文件读取优化
-                loop = asyncio.get_event_loop()
-                template_content = await loop.run_in_executor(None, self._read_file_sync, self.template_path)
+                async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
+                    template_content = await f.read()
                 
                 # 缓存模板内容
                 template_hash = self._get_template_hash(template_content)
@@ -670,21 +670,33 @@ class ImageGenerator:
             except Exception as e:
                 self.logger.warning(f"Jinja2模板渲染失败，使用备用方案: {e}")
         
-        # 备用方案：使用安全的字符串格式化
-        return f'''<div class="{css_classes['item']}" style="{styles['separator']}">
-    <div class="rank-number" style="color: {styles['rank_color']}; font-weight: bold; font-size: 36px;">#{item_data['rank']}</div>
-    <img class="avatar" src="{safe_content['avatar_url']}" style="border-color: {styles['avatar_border']};" />
-    <div class="info">
-        <div class="name-date">
-            <div class="nickname">{safe_content['nickname']}</div>
-            <div class="date">最近发言: {safe_content['last_date']}</div>
-        </div>
-        <div class="stats">
-            <div class="count">{item_data['total']} 次</div>
-            <div class="percentage">({item_data['percentage']:.2f}%)</div>
-        </div>
-    </div>
-</div>'''
+        # 备用方案：使用更安全的字符串拼接方式
+        # 对所有动态内容进行HTML转义
+        safe_nickname = html.escape(safe_content['nickname'])
+        safe_avatar_url = html.escape(safe_content['avatar_url'])
+        safe_last_date = html.escape(safe_content['last_date'])
+        safe_separator_style = html.escape(styles['separator'])
+        safe_rank_color = html.escape(styles['rank_color'])
+        safe_avatar_border = html.escape(styles['avatar_border'])
+        
+        # 使用字符串拼接而不是f-string，提高安全性
+        html_parts = [
+            f'<div class="{css_classes["item"]}" style="{safe_separator_style}">',
+            f'    <div class="rank-number" style="color: {safe_rank_color}; font-weight: bold; font-size: 36px;">#{item_data["rank"]}</div>',
+            f'    <img class="avatar" src="{safe_avatar_url}" style="border-color: {safe_avatar_border};" />',
+            '    <div class="info">',
+            '        <div class="name-date">',
+            f'            <div class="nickname">{safe_nickname}</div>',
+            f'            <div class="date">最近发言: {safe_last_date}</div>',
+            '        </div>',
+            '        <div class="stats">',
+            f'            <div class="count">{item_data["total"]} 次</div>',
+            f'            <div class="percentage">({item_data["percentage"]:.2f}%)</div>',
+            '        </div>',
+            '    </div>',
+            '</div>'
+        ]
+        return '\n'.join(html_parts)
     
     def _get_css_classes(self, item_data: Dict[str, Any]) -> Dict[str, str]:
         """获取CSS类名（优化版本）"""
@@ -772,15 +784,22 @@ class ImageGenerator:
                 if JINJA2_AVAILABLE and isinstance(cached_template, Template):
                     # 缓存命中，获取模板的源代码
                     self.logger.debug("使用缓存的Jinja2模板对象")
-                    # Jinja2 Template对象没有source属性，需要重新获取源代码
-                    # 重新从文件加载以获取源代码
-                    if await aiofiles.os.path.exists(self.template_path):
-                        async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
-                            content = await f.read()
-                        return content
+                    # 直接返回缓存的源代码字符串
+                    if isinstance(cached_template, dict) and 'content' in cached_template:
+                        return cached_template['content']
+                    elif isinstance(cached_template, str):
+                        return cached_template
                     else:
-                        # 如果文件不存在，返回默认模板
-                        return await self._get_default_template()
+                        # 如果缓存的是Template对象本身，需要重新加载源代码
+                        if await aiofiles.os.path.exists(self.template_path):
+                            async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
+                                content = await f.read()
+                            # 更新缓存，包含源代码
+                            await self._update_template_cache(content)
+                            return content
+                        else:
+                            # 如果文件不存在，返回默认模板
+                            return await self._get_default_template()
                 else:
                     # 缓存的是字符串，直接返回
                     return cached_template if isinstance(cached_template, str) else str(cached_template)
@@ -797,7 +816,7 @@ class ImageGenerator:
                     if JINJA2_AVAILABLE:
                         try:
                             template_obj = Template(content)
-                            await self._cache_template(template_obj)
+                            await self._update_template_cache(content)
                         except Exception as e:
                             self.logger.warning(f"创建Jinja2模板对象失败: {e}")
                 else:
@@ -1168,7 +1187,7 @@ class ImageGenerator:
             'jinja2_enabled': JINJA2_AVAILABLE and self.jinja_env is not None,
             'playwright_enabled': PLAYWRIGHT_AVAILABLE,
             'template_path': str(self.template_path),
-            'template_exists': self.template_path.exists() if self.template_path else False
+            'template_exists': await aiofiles.os.path.exists(self.template_path) if self.template_path else False
         }
     
     async def optimize_for_batch_generation(self):

@@ -7,6 +7,7 @@ AstrBot 群发言统计插件
 import asyncio
 import json
 import os
+import aiofiles
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any
 
@@ -93,6 +94,16 @@ class MessageStatsPlugin(Star):
         
         # 插件状态
         self.initialized = False
+    
+    # ========== 类常量定义 ==========
+    
+    # 排行榜数量限制常量
+    RANK_COUNT_MIN = 1
+    RANK_COUNT_MAX = 100
+    
+    # 图片模式别名常量
+    IMAGE_MODE_ENABLE_ALIASES = {'1', 'true', '开', 'on', 'yes'}
+    IMAGE_MODE_DISABLE_ALIASES = {'0', 'false', '关', 'off', 'no'}
     
     async def initialize(self):
         """初始化插件
@@ -387,11 +398,7 @@ class MessageStatsPlugin(Star):
             self.logger.error(f"设置排行榜数量失败(未知错误): {e}", exc_info=True)
             yield event.plain_result("设置失败,请稍后重试")
     
-    # 常量定义
-    IMAGE_MODE_ENABLE_ALIASES = {'1', 'true', '开', 'on', 'yes'}
-    IMAGE_MODE_DISABLE_ALIASES = {'0', 'false', '关', 'off', 'no'}
-    RANK_COUNT_MIN = 1
-    RANK_COUNT_MAX = 100
+
     
     @filter.command("设置发言榜图片")
     async def set_image_mode(self, event: AstrMessageEvent):
@@ -851,7 +858,7 @@ class MessageStatsPlugin(Star):
             )
             
             # 检查图片文件是否存在
-            if os.path.exists(temp_path):
+            if await aiofiles.os.path.exists(temp_path):
                 yield event.image_result(temp_path)
             else:
                 # 回退到文字模式
@@ -880,9 +887,9 @@ class MessageStatsPlugin(Star):
             yield event.plain_result(text_msg)
         finally:
             # 清理临时文件，避免资源泄漏
-            if temp_path and os.path.exists(temp_path):
+            if temp_path and await aiofiles.os.path.exists(temp_path):
                 try:
-                    os.unlink(temp_path)
+                    await aiofiles.os.unlink(temp_path)
                     self.logger.debug(f"临时图片文件已清理: {temp_path}")
                 except OSError as e:
                     self.logger.warning(f"清理临时图片文件失败: {temp_path}, 错误: {e}")
@@ -976,14 +983,35 @@ class MessageStatsPlugin(Star):
     def _count_messages_in_period_fast(self, history: List, start_date, end_date) -> int:
         """快速计算指定时间段内的消息数量（优化版本）
         
-        注意：此方法假设history列表按日期升序排列。如果历史记录未排序，
-        可能需要先调用sort()方法或使用_count_messages_in_period_unordered()方法。
+        如果历史记录未排序，将自动排序后进行计算。
+        对于已排序的记录，使用高效的早停算法。
         """
         # 如果历史记录为空，直接返回0
         if not history:
             return 0
         
-        # 对于较长的历史记录，使用更高效的算法
+        # 检查历史记录是否已排序（优化性能）
+        # 简单检查：如果前几个元素是递增的，则假设已排序
+        is_sorted = True
+        if len(history) > 1:
+            try:
+                first_date = history[0].to_date() if hasattr(history[0], 'to_date') else history[0]
+                second_date = history[1].to_date() if hasattr(history[1], 'to_date') else history[1]
+                if first_date > second_date:
+                    is_sorted = False
+            except (AttributeError, TypeError):
+                # 如果无法比较，假设未排序
+                is_sorted = False
+        
+        # 如果未排序，先排序（性能考虑：只对较长的列表排序）
+        if not is_sorted and len(history) > 10:
+            try:
+                history = sorted(history, key=lambda x: x.to_date() if hasattr(x, 'to_date') else x)
+            except (AttributeError, TypeError):
+                # 排序失败，使用无序版本
+                return self._count_messages_in_period_unordered(history, start_date, end_date)
+        
+        # 使用高效算法计算
         count = 0
         for hist_date in history:
             # 转换为日期对象
@@ -993,8 +1021,11 @@ class MessageStatsPlugin(Star):
             if hist_date_obj < start_date:
                 continue
             if hist_date_obj > end_date:
-                # 假设history按日期升序排列，可以提前跳出循环
-                break
+                # 如果已排序，可以提前跳出循环
+                if is_sorted:
+                    break
+                else:
+                    continue
             count += 1
         
         return count

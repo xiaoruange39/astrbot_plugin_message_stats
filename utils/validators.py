@@ -4,6 +4,7 @@
 """
 
 import re
+import asyncio
 from pathlib import Path
 from typing import Any, Optional, List, Dict, Callable
 from datetime import datetime, date
@@ -509,8 +510,9 @@ class Validators:
 
     
     @staticmethod
-    def _normalize_path(file_path: str) -> str:
-        """规范化文件路径
+    @staticmethod
+    async def _normalize_path(file_path: str) -> str:
+        """规范化文件路径（异步版本）
         
         使用 pathlib 规范化文件路径，处理相对路径、符号链接等。
         
@@ -521,8 +523,8 @@ class Validators:
             str: 规范化后的绝对路径字符串
         """
         path_obj = Path(file_path)
-        # resolve() 会返回绝对路径并解析符号链接
-        normalized_path = path_obj.resolve()
+        # 使用 asyncio.to_thread 将同步的 resolve() 操作在线程池中执行
+        normalized_path = await asyncio.to_thread(path_obj.resolve)
         return str(normalized_path)
     
     @staticmethod
@@ -661,7 +663,8 @@ class Validators:
             raise ValidationError(f"文件类型不支持，允许的类型: {', '.join(allowed_extensions)}")
     
     @staticmethod
-    def validate_file_path(file_path: str, allowed_extensions: Optional[List[str]] = None, 
+    @staticmethod
+    async def validate_file_path(file_path: str, allowed_extensions: Optional[List[str]] = None, 
                           allowed_base_path: Optional[str] = None) -> str:
         """验证文件路径（使用 pathlib）
         
@@ -694,7 +697,8 @@ class Validators:
         try:
             # 使用 pathlib 进行路径规范化
             path_obj = Path(file_path)
-            final_path = str(path_obj.resolve())
+            # 使用 asyncio.to_thread 将同步的 resolve() 操作在线程池中执行
+            final_path = await asyncio.to_thread(lambda: str(path_obj.resolve()))
         except (OSError, ValueError) as e:
             raise ValidationError(f"文件路径无效: {e}")
         

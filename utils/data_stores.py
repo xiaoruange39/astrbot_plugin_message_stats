@@ -38,7 +38,7 @@ class GroupDataStore:
         """加载群组数据"""
         file_path = self._get_group_file_path(group_id)
         
-        if not file_path.exists():
+        if not await aiofiles.os.path.exists(file_path):
             return []
         
         try:
@@ -114,7 +114,7 @@ class GroupDataStore:
         """修复损坏的JSON文件"""
         file_path = self._get_group_file_path(group_id)
         
-        if not file_path.exists():
+        if not await aiofiles.os.path.exists(file_path):
             return False
         
         try:
@@ -159,7 +159,7 @@ class ConfigManager:
     
     async def load_config(self) -> PluginConfig:
         """加载配置"""
-        if not self.config_file.exists():
+        if not await aiofiles.os.path.exists(self.config_file):
             # 创建默认配置
             default_config = PluginConfig()
             await self.save_config(default_config)
@@ -227,18 +227,19 @@ class PluginCache:
         self.logger.info("所有缓存已清理")
     
     def get_cache_stats(self) -> Dict[str, Any]:
-        """获取缓存统计信息"""
+        """获取缓存统计信息
+        
+        注意：TTLCache 不支持 hits/misses 统计，只返回基本统计信息。
+        """
         return {
             'data_cache': {
                 'size': len(self.data_cache),
                 'maxsize': self.data_cache.maxsize,
-                'hits': getattr(self.data_cache, 'hits', 0),
-                'misses': getattr(self.data_cache, 'misses', 0)
+                'ttl': self.data_cache.ttl
             },
             'config_cache': {
                 'size': len(self.config_cache),
                 'maxsize': self.config_cache.maxsize,
-                'hits': getattr(self.config_cache, 'hits', 0),
-                'misses': getattr(self.config_cache, 'misses', 0)
+                'ttl': self.config_cache.ttl
             }
         }

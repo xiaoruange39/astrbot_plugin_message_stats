@@ -76,11 +76,11 @@ class DataManager:
         self.data_cache = self.cache_manager.get_data_cache()
         self.config_cache = self.cache_manager.get_config_cache()
     
-    def _ensure_directories(self):
+    async def _ensure_directories(self):
         """确保所有必要的目录存在"""
         directories = [self.data_dir, self.groups_dir, self.cache_dir]
         for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
     
     async def initialize(self):
         """初始化数据管理器
@@ -208,15 +208,15 @@ class DataManager:
                 await f.write(json_content)
             
             # 原子性移动到目标文件
-            temp_file.replace(file_path)
+            await asyncio.to_thread(temp_file.replace, file_path)
             return True
             
         except (IOError, OSError) as e:
             self.logger.error(f"安全保存文件失败: {e}")
             # 清理临时文件
             temp_file = file_path.with_suffix('.tmp')
-            if temp_file.exists():
-                temp_file.unlink()
+            if await asyncio.to_thread(temp_file.exists):
+                await asyncio.to_thread(temp_file.unlink)
             return False
     
     # ========== 群组数据管理 ==========
@@ -314,22 +314,21 @@ class DataManager:
                 users = await self.get_group_data(group_id)
                 current_timestamp = int(datetime.now().timestamp())
                 
-                # 查找用户
-                user_found = False
-                for user in users:
-                    if user.user_id == user_id:
-                        # 更新现有用户 - 使用add_message方法正确记录历史
-                        today = datetime.now().date()
-                        message_date = MessageDate.from_date(today)
-                        user.add_message(message_date)
-                        user.last_message_time = current_timestamp
-                        if user.first_message_time is None:
-                            user.first_message_time = current_timestamp
-                        user_found = True
-                        break
+                # 优化性能：将用户列表转换为字典，以 user_id 为键
+                users_dict = {user.user_id: user for user in users}
                 
-                # 如果用户不存在，创建新用户
-                if not user_found:
+                # 查找用户（O(1) 操作）
+                if user_id in users_dict:
+                    # 更新现有用户 - 使用add_message方法正确记录历史
+                    user = users_dict[user_id]
+                    today = datetime.now().date()
+                    message_date = MessageDate.from_date(today)
+                    user.add_message(message_date)
+                    user.last_message_time = current_timestamp
+                    if user.first_message_time is None:
+                        user.first_message_time = current_timestamp
+                else:
+                    # 如果用户不存在，创建新用户
                     # 为新用户创建消息记录
                     today = datetime.now().date()
                     message_date = MessageDate.from_date(today)
@@ -343,10 +342,13 @@ class DataManager:
                     )
                     # 添加第一条消息记录（这会将message_count增加到1）
                     new_user.add_message(message_date)
-                    users.append(new_user)
+                    users_dict[user_id] = new_user
+                
+                # 将字典转换回列表
+                updated_users = list(users_dict.values())
                 
                 # 保存更新后的数据
-                await self.save_group_data(group_id, users)
+                await self.save_group_data(group_id, updated_users)
                 return True
                 
             except (IOError, OSError) as e:
