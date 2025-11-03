@@ -4,6 +4,7 @@
 """
 
 import json
+import asyncio
 import aiofiles
 import aiofiles.os
 from pathlib import Path
@@ -27,7 +28,7 @@ async def load_json_file(file_path: str) -> Dict[str, Any]:
     try:
         async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
             content = await f.read()
-            return json.loads(content)
+            return await asyncio.to_thread(json.loads, content)
     except FileNotFoundError:
         raise FileNotFoundError(f"文件不存在: {file_path}")
     except json.JSONDecodeError as e:
@@ -42,4 +43,5 @@ async def save_json_file(file_path: str, data: Dict[str, Any]) -> None:
     await aiofiles.os.makedirs(Path(file_path).parent, exist_ok=True)
     
     async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-        await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+        json_content = await asyncio.to_thread(json.dumps, data, ensure_ascii=False, indent=2)
+        await f.write(json_content)

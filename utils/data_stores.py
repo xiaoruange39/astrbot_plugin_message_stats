@@ -4,6 +4,7 @@
 """
 
 import json
+import asyncio
 import aiofiles
 import aiofiles.os
 from pathlib import Path
@@ -24,11 +25,11 @@ class GroupDataStore:
     def __init__(self, groups_dir: Path, logger=None):
         self.groups_dir = groups_dir
         self.logger = logger or astrbot_logger
-        self._ensure_groups_directory()
+        # 目录创建延迟到首次使用时异步执行
     
-    def _ensure_groups_directory(self):
+    async def _ensure_groups_directory(self):
         """确保群组数据目录存在"""
-        self.groups_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self.groups_dir.mkdir, parents=True, exist_ok=True)
     
     def _get_group_file_path(self, group_id: str) -> Path:
         """获取群组数据文件路径"""
@@ -36,15 +37,17 @@ class GroupDataStore:
     
     async def load_group_data(self, group_id: str) -> List[UserData]:
         """加载群组数据"""
+        # 确保目录存在
+        await self._ensure_groups_directory()
         file_path = self._get_group_file_path(group_id)
         
         if not await aiofiles.os.path.exists(file_path):
             return []
         
         try:
-            async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+            async with aiofiles.open(str(file_path), 'r', encoding='utf-8') as f:
                 content = await f.read()
-                data = json.loads(content)
+                data = await asyncio.to_thread(json.loads, content)
             
             # 转换为UserData对象列表
             users = []
@@ -88,8 +91,9 @@ class GroupDataStore:
                 'users': [user.to_dict() for user in users]
             }
             
-            async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            json_content = await asyncio.to_thread(json.dumps, data, ensure_ascii=False, indent=2)
+            async with aiofiles.open(str(file_path), 'w', encoding='utf-8') as f:
+                await f.write(json_content)
             
             return True
             
@@ -119,17 +123,17 @@ class GroupDataStore:
         
         try:
             # 读取文件内容
-            async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+            async with aiofiles.open(str(file_path), 'r', encoding='utf-8') as f:
                 content = await f.read()
             
             # 尝试解析JSON
             try:
-                json.loads(content)
+                await asyncio.to_thread(json.loads, content)
                 return True  # 文件正常
             except json.JSONDecodeError:
                 # 文件损坏，创建备份
                 backup_path = file_path.with_suffix('.json.backup')
-                async with aiofiles.open(backup_path, 'w', encoding='utf-8') as f:
+                async with aiofiles.open(str(backup_path), 'w', encoding='utf-8') as f:
                     await f.write(content)
                 
                 # 创建新的空数据文件
@@ -151,14 +155,16 @@ class ConfigManager:
     def __init__(self, config_file: Path, logger=None):
         self.config_file = config_file
         self.logger = logger or astrbot_logger
-        self._ensure_config_directory()
+        # 目录创建延迟到首次使用时异步执行
     
-    def _ensure_config_directory(self):
+    async def _ensure_config_directory(self):
         """确保配置目录存在"""
-        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(self.config_file.parent.mkdir, parents=True, exist_ok=True)
     
     async def load_config(self) -> PluginConfig:
         """加载配置"""
+        # 确保配置目录存在
+        await self._ensure_config_directory()
         if not await aiofiles.os.path.exists(self.config_file):
             # 创建默认配置
             default_config = PluginConfig()
@@ -166,9 +172,9 @@ class ConfigManager:
             return default_config
         
         try:
-            async with aiofiles.open(self.config_file, 'r', encoding='utf-8') as f:
+            async with aiofiles.open(str(self.config_file), 'r', encoding='utf-8') as f:
                 content = await f.read()
-                data = json.loads(content)
+                data = await asyncio.to_thread(json.loads, content)
             
             # 转换为PluginConfig对象
             return PluginConfig.from_dict(data)
@@ -183,8 +189,9 @@ class ConfigManager:
         try:
             data = config.to_dict()
             
-            async with aiofiles.open(self.config_file, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            json_content = await asyncio.to_thread(json.dumps, data, ensure_ascii=False, indent=2)
+            async with aiofiles.open(str(self.config_file), 'w', encoding='utf-8') as f:
+                await f.write(json_content)
             
             return True
             

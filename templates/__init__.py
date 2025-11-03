@@ -35,12 +35,20 @@ def get_default_template() -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>发言排行榜</title>
     <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        
         body {{
             font-family: Arial, sans-serif;
             background-color: #f5f5f5;
             padding: 20px;
             margin: 0;
+            line-height: 1.6;
         }}
+        
         .container {{
             max-width: 800px;
             margin: 0 auto;
@@ -48,19 +56,33 @@ def get_default_template() -> str:
             border-radius: 10px;
             padding: 20px;
             box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
         }}
+        
         .title {{
             text-align: center;
             color: #333333;
             margin-bottom: 20px;
             font-size: 24px;
+            font-weight: bold;
         }}
+        
         .user-item {{
             display: flex;
             align-items: center;
             padding: 10px;
             border-bottom: 1px solid #eeeeee;
+            transition: background-color 0.3s ease;
         }}
+        
+        .user-item:hover {{
+            background-color: #f9f9f9;
+        }}
+        
+        .user-item:last-child {{
+            border-bottom: none;
+        }}
+        
         .rank {{
             width: 40px;
             height: 40px;
@@ -72,17 +94,62 @@ def get_default_template() -> str:
             justify-content: center;
             margin-right: 15px;
             font-weight: bold;
+            font-size: 14px;
+            flex-shrink: 0;
         }}
+        
         .info {{
             flex: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }}
+        
         .nickname {{
             font-weight: bold;
             color: #333;
+            font-size: 16px;
+            margin-bottom: 2px;
         }}
+        
         .count {{
             color: #666;
             font-size: 14px;
+            font-weight: 500;
+        }}
+        
+        /* 响应式设计 */
+        @media (max-width: 768px) {{
+            body {{
+                padding: 10px;
+            }}
+            
+            .container {{
+                padding: 15px;
+            }}
+            
+            .title {{
+                font-size: 20px;
+            }}
+            
+            .user-item {{
+                padding: 8px;
+            }}
+            
+            .rank {{
+                width: 35px;
+                height: 35px;
+                font-size: 12px;
+                margin-right: 10px;
+            }}
+            
+            .nickname {{
+                font-size: 14px;
+            }}
+            
+            .count {{
+                font-size: 12px;
+            }}
         }}
     </style>
 </head>

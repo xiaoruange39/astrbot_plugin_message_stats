@@ -157,14 +157,14 @@ class DataManager:
         """
         try:
             # 首先尝试直接解析
-            return json.loads(content)
+            return await asyncio.to_thread(json.loads, content)
         except json.JSONDecodeError:
             pass
         
         try:
             # 尝试简单修复：清理多余的逗号
             cleaned_content = re.sub(r',(\s*[}\]])', r'\1', content)
-            return json.loads(cleaned_content)
+            return await asyncio.to_thread(json.loads, cleaned_content)
         except (json.JSONDecodeError, UnicodeDecodeError):
             # 简单修复失败，采用稳健策略：备份并重建
             self.logger.warning(f"JSON文件 {file_path} 损坏，创建备份并重建")
@@ -204,7 +204,7 @@ class DataManager:
             
             # 写入临时文件
             async with aiofiles.open(temp_file, 'w', encoding='utf-8') as f:
-                json_content = json.dumps(data, ensure_ascii=False, indent=2)
+                json_content = await asyncio.to_thread(json.dumps, data, ensure_ascii=False, indent=2)
                 await f.write(json_content)
             
             # 原子性移动到目标文件
@@ -464,10 +464,10 @@ class DataManager:
             return self.config_cache[cache_key]
         
         try:
-            if self.config_file.exists():
+            if await asyncio.to_thread(self.config_file.exists):
                 async with aiofiles.open(self.config_file, 'r', encoding='utf-8') as f:
                     content = await f.read()
-                    config_data = json.loads(content)
+                    config_data = await asyncio.to_thread(json.loads, content)
                 
                 config = PluginConfig.from_dict(config_data)
                 

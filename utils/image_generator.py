@@ -13,6 +13,7 @@ import os
 import traceback
 import hashlib
 import json
+import uuid
 from functools import lru_cache
 
 from astrbot.api import logger as astrbot_logger
@@ -268,7 +269,16 @@ class ImageGenerator:
             self.logger.info("Chromium浏览器启动成功")
             
             self.logger.info("图片生成器初始化完成")
-        except (IOError, OSError) as e:
+        except FileNotFoundError as e:
+            self.logger.error(f"浏览器可执行文件未找到: {e}")
+            raise ImageGenerationError(f"浏览器未安装或路径错误: {e}")
+        except PermissionError as e:
+            self.logger.error(f"启动浏览器权限不足: {e}")
+            raise ImageGenerationError(f"权限不足，无法启动浏览器: {e}")
+        except ConnectionError as e:
+            self.logger.error(f"浏览器连接失败: {e}")
+            raise ImageGenerationError(f"浏览器连接失败: {e}")
+        except Exception as e:
             self.logger.error(f"初始化图片生成器失败: {e}")
             self.logger.error(f"详细错误: {traceback.format_exc()}")
             raise ImageGenerationError(f"初始化失败: {e}")
@@ -305,7 +315,9 @@ class ImageGenerator:
             
             self.logger.info("图片生成器资源已清理")
         
-        except (IOError, OSError) as e:
+        except ConnectionError as e:
+            self.logger.error(f"浏览器连接错误: {e}")
+        except Exception as e:
             self.logger.error(f"清理图片生成器资源失败: {e}")
     
     async def generate_rank_image(self, 
@@ -339,16 +351,25 @@ class ImageGenerator:
             body_height = await self.page.evaluate("document.body.scrollHeight")
             await self.page.set_viewport_size({"width": self.width, "height": body_height})
             
-            # 生成临时文件路径
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_file:
-                temp_path = temp_file.name
+            # 生成临时文件路径（异步方式）
+            temp_filename = f"rank_image_{uuid.uuid4().hex}.png"
+            temp_path = Path(tempfile.gettempdir()) / temp_filename
             
             # 截图
             await self.page.screenshot(path=temp_path, full_page=True)
             
             return temp_path
         
-        except (IOError, OSError) as e:
+        except FileNotFoundError as e:
+            self.logger.error(f"临时文件或资源未找到: {e}")
+            raise ImageGenerationError(f"文件资源未找到: {e}")
+        except PermissionError as e:
+            self.logger.error(f"权限错误: {e}")
+            raise ImageGenerationError(f"权限不足: {e}")
+        except TimeoutError as e:
+            self.logger.error(f"浏览器操作超时: {e}")
+            raise ImageGenerationError(f"操作超时: {e}")
+        except Exception as e:
             self.logger.error(f"生成排行榜图片失败: {e}")
             self.logger.error(f"详细错误: {traceback.format_exc()}")
             raise ImageGenerationError(f"生成图片失败: {e}")
@@ -467,13 +488,23 @@ class ImageGenerator:
                 # Jinja2不可用时，使用纯占位符回退模板
                 fallback_template = await self._get_fallback_template()
                 return self._render_fallback_template(fallback_template, template_data, user_items)
-        except (ValueError, TypeError, KeyError) as e:
-            self.logger.error(f"HTML模板渲染失败，模板数据错误: {e}")
+        except ValueError as e:
+            self.logger.error(f"HTML模板渲染失败，模板数据值错误: {e}")
             # 使用安全的备用方法
             fallback_template = await self._get_fallback_template()
             return self._render_fallback_template(fallback_template, template_data, user_items)
-        except (IOError, OSError) as e:
-            self.logger.error(f"HTML模板渲染失败，文件操作错误: {e}")
+        except TypeError as e:
+            self.logger.error(f"HTML模板渲染失败，模板数据类型错误: {e}")
+            # 使用安全的备用方法
+            fallback_template = await self._get_fallback_template()
+            return self._render_fallback_template(fallback_template, template_data, user_items)
+        except KeyError as e:
+            self.logger.error(f"HTML模板渲染失败，模板键错误: {e}")
+            # 使用安全的备用方法
+            fallback_template = await self._get_fallback_template()
+            return self._render_fallback_template(fallback_template, template_data, user_items)
+        except PermissionError as e:
+            self.logger.error(f"HTML模板渲染失败，权限错误: {e}")
             # 使用安全的备用方法
             fallback_template = await self._get_fallback_template()
             return self._render_fallback_template(fallback_template, template_data, user_items)
@@ -548,8 +579,8 @@ class ImageGenerator:
                     else:
                         safe_content = safe_content.replace('{{' + key + '}}', str(value))
                 return safe_content
-        except (ValueError, TypeError, KeyError) as e:
-            self.logger.error(f"空数据HTML模板渲染失败，模板数据错误: {e}")
+        except ValueError as e:
+            self.logger.error(f"空数据HTML模板渲染失败，模板数据值错误: {e}")
             # 回退到最简单的HTML
             return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -562,8 +593,36 @@ class ImageGenerator:
     <p>暂无数据</p>
 </body>
 </html>"""
-        except (IOError, OSError) as e:
-            self.logger.error(f"空数据HTML模板渲染失败，文件操作错误: {e}")
+        except TypeError as e:
+            self.logger.error(f"空数据HTML模板渲染失败，模板数据类型错误: {e}")
+            # 回退到最简单的HTML
+            return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>发言排行榜</title>
+</head>
+<body>
+    <h1>发言排行榜</h1>
+    <p>暂无数据</p>
+</body>
+</html>"""
+        except KeyError as e:
+            self.logger.error(f"空数据HTML模板渲染失败，模板键错误: {e}")
+            # 回退到最简单的HTML
+            return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>发言排行榜</title>
+</head>
+<body>
+    <h1>发言排行榜</h1>
+    <p>暂无数据</p>
+</body>
+</html>"""
+        except PermissionError as e:
+            self.logger.error(f"空数据HTML模板渲染失败，权限错误: {e}")
             # 回退到最简单的HTML
             return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -770,30 +829,18 @@ class ImageGenerator:
         return service_url.format(user_id=user_id, avatar_id=int(user_id) % 5)
     
     async def _load_html_template(self) -> str:
-        """加载HTML模板（修复缓存逻辑）"""
+        """加载HTML模板（简化缓存逻辑）"""
         try:
-            # 首先尝试从缓存获取
+            # 尝试从缓存获取
             cached_template = await self._get_cached_template()
             if cached_template:
-                # 根据缓存的数据类型进行处理
-                if isinstance(cached_template, Template):
-                    # 缓存的是Jinja2模板对象，需要重新加载源代码
-                    self.logger.debug("使用缓存的Jinja2模板对象")
-                    if await aiofiles.os.path.exists(self.template_path):
-                        async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
-                            content = await f.read()
-                        # 更新缓存，包含源代码
-                        await self._update_template_cache(content)
-                        return content
-                    else:
-                        # 如果文件不存在，返回默认模板
-                        return await self._get_default_template()
-                elif isinstance(cached_template, str):
-                    # 缓存的是字符串，直接返回
-                    self.logger.debug("使用缓存的模板字符串")
+                self.logger.debug("使用缓存的模板")
+                if isinstance(cached_template, str):
                     return cached_template
+                elif hasattr(cached_template, 'source'):
+                    # Jinja2模板对象，返回源代码
+                    return cached_template.source
                 else:
-                    # 其他类型，转换为字符串
                     return str(cached_template)
             
             # 缓存未命中，从文件加载
@@ -801,32 +848,27 @@ class ImageGenerator:
                 async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
                     content = await f.read()
                 
-                # 检查模板是否使用Jinja2语法
-                if '{{' in content or '{%' in content:
-                    self.logger.info("检测到Jinja2模板语法")
-                    # 如果是Jinja2模板，创建模板对象并缓存
-                    if JINJA2_AVAILABLE:
-                        try:
-                            template_obj = Template(content)
-                            await self._update_template_cache(content)
-                        except Exception as e:
-                            self.logger.warning(f"创建Jinja2模板对象失败: {e}")
-                else:
-                    self.logger.warning("模板未使用Jinja2语法，建议更新为安全模板")
-                
                 # 更新缓存
                 await self._update_template_cache(content)
-                
                 return content
             else:
                 self.logger.warning(f"模板文件不存在: {self.template_path}")
-                # 使用内置模板
+                # 使用默认模板
                 default_template = await self._get_default_template()
                 await self._update_template_cache(default_template)
                 return default_template
-        except (IOError, OSError) as e:
-            self.logger.error(f"加载HTML模板失败: {e}")
-            self.logger.error(f"详细错误: {traceback.format_exc()}")
+        except FileNotFoundError as e:
+            self.logger.warning(f"模板文件未找到: {e}")
+            default_template = await self._get_default_template()
+            await self._update_template_cache(default_template)
+            return default_template
+        except PermissionError as e:
+            self.logger.error(f"模板文件权限错误: {e}")
+            default_template = await self._get_default_template()
+            await self._update_template_cache(default_template)
+            return default_template
+        except UnicodeDecodeError as e:
+            self.logger.error(f"模板文件编码错误: {e}")
             default_template = await self._get_default_template()
             await self._update_template_cache(default_template)
             return default_template
@@ -1144,7 +1186,16 @@ class ImageGenerator:
             
             return title == "Test"
         
-        except (IOError, OSError) as e:
+        except FileNotFoundError as e:
+            self.logger.error(f"浏览器可执行文件未找到: {e}")
+            return False
+        except PermissionError as e:
+            self.logger.error(f"测试浏览器连接权限不足: {e}")
+            return False
+        except ConnectionError as e:
+            self.logger.error(f"浏览器连接失败: {e}")
+            return False
+        except Exception as e:
             self.logger.error(f"测试浏览器连接失败: {e}")
             return False
     
@@ -1160,7 +1211,13 @@ class ImageGenerator:
                 "viewport": {"width": self.width, "height": self.viewport_height}
             }
         
-        except (IOError, OSError) as e:
+        except FileNotFoundError as e:
+            return {"status": "error", "error": f"浏览器文件未找到: {e}"}
+        except PermissionError as e:
+            return {"status": "error", "error": f"权限不足: {e}"}
+        except ConnectionError as e:
+            return {"status": "error", "error": f"连接失败: {e}"}
+        except Exception as e:
             return {"status": "error", "error": str(e)}
     
     async def clear_cache(self):

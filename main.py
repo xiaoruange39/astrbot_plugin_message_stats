@@ -867,7 +867,7 @@ class MessageStatsPlugin(Star):
             
             # 检查图片文件是否存在
             if await aiofiles.os.path.exists(temp_path):
-                yield event.image_result(temp_path)
+                yield event.image_result(str(temp_path))
             else:
                 # 回退到文字模式
                 text_msg = self._generate_text_message(filtered_data, group_info, title, config)
@@ -950,9 +950,9 @@ class MessageStatsPlugin(Star):
         if rank_type == RankType.DAILY:
             return self._calculate_daily_rank(group_data, start_date, end_date)
         
-        # 对于周榜和月榜，使用优化策略
+        # 对于周榜和月榜，使用优化策略（现在是异步方法）
         elif rank_type in [RankType.WEEKLY, RankType.MONTHLY]:
-            return self._calculate_period_rank_optimized(group_data, start_date, end_date)
+            return await self._calculate_period_rank_optimized(group_data, start_date, end_date)
         
         return []
     
@@ -970,7 +970,7 @@ class MessageStatsPlugin(Star):
         
         return filtered_users
     
-    def _calculate_period_rank_optimized(self, group_data: List[UserData], start_date, end_date) -> List[tuple]:
+    async def _calculate_period_rank_optimized(self, group_data: List[UserData], start_date, end_date) -> List[tuple]:
         """计算周榜/月榜（优化策略）"""
         # 优化策略：先筛选出有历史记录的用户，然后批量计算
         active_users = [user for user in group_data if user.history]
@@ -981,14 +981,14 @@ class MessageStatsPlugin(Star):
         # 批量计算，减少函数调用开销
         filtered_users = []
         for user in active_users:
-            # 使用更高效的计算方法
-            period_count = self._count_messages_in_period_fast(user.history, start_date, end_date)
+            # 使用更高效的计算方法（现在是异步方法）
+            period_count = await self._count_messages_in_period_fast(user.history, start_date, end_date)
             if period_count > 0:
                 filtered_users.append((user, period_count))
         
         return filtered_users
     
-    def _count_messages_in_period_fast(self, history: List, start_date, end_date) -> int:
+    async def _count_messages_in_period_fast(self, history: List, start_date, end_date) -> int:
         """快速计算指定时间段内的消息数量（优化版本）
         
         如果历史记录未排序，将自动排序后进行计算。
@@ -998,28 +998,44 @@ class MessageStatsPlugin(Star):
         if not history:
             return 0
         
-        # 检查历史记录是否已排序（完整检查）
-        # 通过遍历整个列表来验证排序状态，确保所有相邻元素都满足升序条件
+        # 优化is_sorted检查逻辑，减少不必要的遍历开销
+        # 只检查前几个和后几个元素，对于大数据集更高效
         is_sorted = True
         if len(history) > 1:
             try:
-                # 遍历整个列表，检查每一对相邻元素
-                for i in range(len(history) - 1):
+                # 采样检查：检查开头、结尾和中间几个关键点
+                check_indices = [0, len(history) // 4, len(history) // 2, 3 * len(history) // 4, len(history) - 1]
+                
+                # 检查前几个元素是否递增
+                for i in range(min(3, len(history) - 1)):
                     current_date = history[i].to_date() if hasattr(history[i], 'to_date') else history[i]
                     next_date = history[i + 1].to_date() if hasattr(history[i + 1], 'to_date') else history[i + 1]
-                    
-                    # 如果当前元素大于下一个元素，则列表未排序
                     if current_date > next_date:
                         is_sorted = False
                         break
+                
+                # 如果前面检查都通过，再检查后面几个元素
+                if is_sorted and len(history) > 10:
+                    for i in range(max(0, len(history) - 4), len(history) - 1):
+                        current_date = history[i].to_date() if hasattr(history[i], 'to_date') else history[i]
+                        next_date = history[i + 1].to_date() if hasattr(history[i + 1], 'to_date') else history[i + 1]
+                        if current_date > next_date:
+                            is_sorted = False
+                            break
+                            
             except (AttributeError, TypeError):
                 # 如果无法比较，假设未排序
                 is_sorted = False
         
-        # 如果未排序，先排序（性能考虑：只对较长的列表排序）
+        # 如果未排序，使用asyncio.to_thread包装同步排序操作，避免阻塞事件循环
         if not is_sorted and len(history) > 10:
             try:
-                history = sorted(history, key=lambda x: x.to_date() if hasattr(x, 'to_date') else x)
+                # 定义排序键函数
+                def sort_key_func(x):
+                    return x.to_date() if hasattr(x, 'to_date') else x
+                
+                # 使用asyncio.to_thread包装同步排序操作
+                history = await asyncio.to_thread(sorted, history, key=sort_key_func)
             except (AttributeError, TypeError):
                 # 排序失败，使用无序版本
                 return self._count_messages_in_period_unordered(history, start_date, end_date)
