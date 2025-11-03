@@ -13,7 +13,7 @@ import traceback
 import hashlib
 import json
 from functools import lru_cache
-from threading import Lock
+import asyncio
 
 from astrbot.api import logger as astrbot_logger
 
@@ -108,14 +108,14 @@ class ImageGenerator:
         
         # 模板缓存机制
         self._template_cache: Dict[str, Any] = {}
-        self._cache_lock = Lock()
+        self._cache_lock = asyncio.Lock()
         self._cache_hits = 0
         self._cache_misses = 0
         
         # 初始化Jinja2环境
-        self._init_jinja2_env()
+        asyncio.create_task(self._init_jinja2_env())
     
-    def _init_jinja2_env(self):
+    async def _init_jinja2_env(self):
         """初始化Jinja2环境
         
         创建Jinja2模板环境，启用自动转义以防止XSS攻击。
@@ -126,7 +126,7 @@ class ImageGenerator:
             None: 无返回值，初始化结果通过日志输出
             
         Example:
-            >>> self._init_jinja2_env()
+            >>> await self._init_jinja2_env()
             # 将初始化Jinja2环境或记录警告信息
         """
         if JINJA2_AVAILABLE:
@@ -140,7 +140,7 @@ class ImageGenerator:
                 )
                 
                 # 预加载模板文件
-                self._preload_templates()
+                await self._preload_templates()
                 
                 self.logger.info("Jinja2环境初始化成功，模板缓存已启用")
             except Exception as e:
@@ -150,7 +150,7 @@ class ImageGenerator:
             self.jinja_env = None
             self.logger.warning("Jinja2不可用，将使用不安全的字符串拼接")
     
-    def _preload_templates(self):
+    async def _preload_templates(self):
         """预加载模板文件到缓存"""
         try:
             if self.template_path.exists():
@@ -159,7 +159,7 @@ class ImageGenerator:
                 
                 # 缓存模板内容
                 template_hash = self._get_template_hash(template_content)
-                with self._cache_lock:
+                async with self._cache_lock:
                     self._template_cache['main_template'] = {
                         'content': template_content,
                         'hash': template_hash,
@@ -176,9 +176,9 @@ class ImageGenerator:
         """获取模板内容的哈希值，用于缓存验证"""
         return hashlib.md5(content.encode('utf-8')).hexdigest()
     
-    def _get_cached_template(self) -> Optional[Union[str, Template]]:
+    async def _get_cached_template(self) -> Optional[Union[str, Template]]:
         """获取缓存的模板"""
-        with self._cache_lock:
+        async with self._cache_lock:
             cached = self._template_cache.get('main_template')
             if cached:
                 self._cache_hits += 1
@@ -187,11 +187,11 @@ class ImageGenerator:
                 self._cache_misses += 1
                 return None
     
-    def _update_template_cache(self, content: str):
+    async def _update_template_cache(self, content: str):
         """更新模板缓存"""
         try:
             template_hash = self._get_template_hash(content)
-            with self._cache_lock:
+            async with self._cache_lock:
                 self._template_cache['main_template'] = {
                     'content': content,
                     'hash': template_hash,
@@ -201,9 +201,9 @@ class ImageGenerator:
         except Exception as e:
             self.logger.error(f"更新模板缓存失败: {e}")
     
-    def get_cache_stats(self) -> Dict[str, int]:
+    async def get_cache_stats(self) -> Dict[str, int]:
         """获取缓存统计信息"""
-        with self._cache_lock:
+        async with self._cache_lock:
             return {
                 'hits': self._cache_hits,
                 'misses': self._cache_misses,
@@ -311,7 +311,7 @@ class ImageGenerator:
             await self.page.set_viewport_size({"width": self.width, "height": self.viewport_height})
             
             # 生成HTML内容
-            html_content = self._generate_html(users, group_info, title, current_user_id)
+            html_content = await self._generate_html(users, group_info, title, current_user_id)
             
             # 设置页面内容
             await self.page.set_content(html_content, wait_until="networkidle")
@@ -342,14 +342,14 @@ class ImageGenerator:
                 await self.page.close()
                 self.page = None
     
-    def _generate_html(self, 
+    async def _generate_html(self, 
                       users: List[UserData], 
                       group_info: GroupInfo, 
                       title: str,
                       current_user_id: Optional[str] = None) -> str:
         """生成HTML内容（优化版本）"""
         if not users:
-            return self._generate_empty_html(group_info, title)
+            return await self._generate_empty_html(group_info, title)
         
         # 使用批量处理优化性能
         processed_data = self._process_user_data_batch(users, current_user_id)
@@ -358,7 +358,7 @@ class ImageGenerator:
         total_messages = processed_data['total_messages']
         
         # 生成完整HTML
-        html_template = self._load_html_template()
+        html_template = await self._load_html_template()
         
         # 获取当前时间
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -374,7 +374,7 @@ class ImageGenerator:
         }
         
         # 生成HTML内容（优化渲染逻辑）
-        return self._render_html_template(html_template, template_data, processed_data['user_items'])
+        return await self._render_html_template(html_template, template_data, processed_data['user_items'])
     
     def _process_user_data_batch(self, users: List[UserData], current_user_id: Optional[str]) -> Dict[str, Any]:
         """批量处理用户数据，优化性能"""
@@ -382,7 +382,7 @@ class ImageGenerator:
             return {'total_messages': 0, 'user_items': []}
         
         # 预计算统计数据 - 使用时间段内的发言数
-        total_messages = sum(getattr(user, 'display_total', user.total) for user in users)
+        total_messages = sum(getattr(user, 'display_total', user.message_count) for user in users)
         
         # 批量生成用户项目
         user_items = []
@@ -395,7 +395,7 @@ class ImageGenerator:
                 current_user_found = True
             
             # 使用时间段内的发言数
-            user_messages = getattr(user, 'display_total', user.total)
+            user_messages = getattr(user, 'display_total', user.message_count)
             user_items.append({
                 'rank': i + 1,
                 'nickname': user.nickname,
@@ -413,7 +413,7 @@ class ImageGenerator:
             if current_user_data:
                 # 使用时间段内的发言数计算排名
                 current_user_messages = getattr(current_user_data, 'display_total', current_user_data.total)
-                current_rank = sum(1 for user in users if getattr(user, 'display_total', user.total) > current_user_messages) + 1
+                current_rank = sum(1 for user in users if getattr(user, 'display_total', user.message_count) > current_user_messages) + 1
                 user_items.append({
                     'rank': current_rank,
                     'nickname': current_user_data.nickname,
@@ -430,12 +430,12 @@ class ImageGenerator:
             'user_items': user_items
         }
     
-    def _render_html_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
+    async def _render_html_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
         """优化的HTML模板渲染方法"""
         try:
             if JINJA2_AVAILABLE and self.jinja_env:
                 # 使用缓存的模板
-                cached_template = self._get_cached_template()
+                cached_template = await self._get_cached_template()
                 if cached_template and isinstance(cached_template, Template):
                     template_data['user_items'] = user_items
                     return cached_template.render(**template_data)
@@ -445,12 +445,14 @@ class ImageGenerator:
                     template_data['user_items'] = user_items
                     return template.render(**template_data)
             else:
-                # 回退到优化的字符串格式化
-                return self._render_fallback_template(template_content, template_data, user_items)
+                # Jinja2不可用时，使用纯占位符回退模板
+                fallback_template = await self._get_fallback_template()
+                return self._render_fallback_template(fallback_template, template_data, user_items)
         except Exception as e:
             self.logger.error(f"HTML模板渲染失败: {e}")
             # 使用安全的备用方法
-            return self._render_fallback_template(template_content, template_data, user_items)
+            fallback_template = await self._get_fallback_template()
+            return self._render_fallback_template(fallback_template, template_data, user_items)
     
     def _render_fallback_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
         """回退模板渲染方法（安全版本）
@@ -477,11 +479,11 @@ class ImageGenerator:
         
         return safe_content
     
-    def _generate_empty_html(self, group_info: GroupInfo, title: str) -> str:
+    async def _generate_empty_html(self, group_info: GroupInfo, title: str) -> str:
         """生成空数据HTML（优化版本）"""
         # 尝试从缓存获取空数据模板
         empty_template_cache_key = 'empty_template'
-        with self._cache_lock:
+        async with self._cache_lock:
             cached_empty = self._template_cache.get(empty_template_cache_key)
         
         if cached_empty:
@@ -489,8 +491,8 @@ class ImageGenerator:
             template_obj = cached_empty.get('template')
         else:
             # 创建空数据模板
-            template_content = self._get_empty_template()
-            with self._cache_lock:
+            template_content = await self._get_empty_template()
+            async with self._cache_lock:
                 self._template_cache[empty_template_cache_key] = {
                     'content': template_content,
                     'template': self.jinja_env.from_string(template_content) if self.jinja_env else None
@@ -532,7 +534,7 @@ class ImageGenerator:
 </body>
 </html>"""
     
-    def _get_empty_template(self) -> str:
+    async def _get_empty_template(self) -> str:
         """获取空数据模板（简化版本）"""
         return """<!DOCTYPE html>
 <html lang="zh-CN">
@@ -660,21 +662,21 @@ class ImageGenerator:
         """获取用户头像URL"""
         return f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640"
     
-    def _load_html_template(self) -> str:
+    async def _load_html_template(self) -> str:
         """加载HTML模板（使用缓存优化）"""
         try:
             # 首先尝试从缓存获取
-            cached_template = self._get_cached_template()
+            cached_template = await self._get_cached_template()
             if cached_template:
                 # 如果缓存的是Jinja2模板对象，需要重新读取文件内容
-                if hasattr(cached_template, 'module') or str(type(cached_template)).find('Template') != -1:
+                if JINJA2_AVAILABLE and isinstance(cached_template, Template):
                     # 重新从文件加载原始字符串内容
                     if self.template_path.exists():
                         with open(self.template_path, 'r', encoding='utf-8') as f:
                             content = f.read()
                         return content
                     else:
-                        default_template = self._get_default_template()
+                        default_template = await self._get_default_template()
                         return default_template
                 else:
                     return cached_template if isinstance(cached_template, str) else str(cached_template)
@@ -691,27 +693,165 @@ class ImageGenerator:
                     self.logger.warning("模板未使用Jinja2语法，建议更新为安全模板")
                 
                 # 更新缓存
-                self._update_template_cache(content)
+                await self._update_template_cache(content)
                 
                 return content
             else:
                 self.logger.warning(f"模板文件不存在: {self.template_path}")
                 # 使用内置模板
-                default_template = self._get_default_template()
-                self._update_template_cache(default_template)
+                default_template = await self._get_default_template()
+                await self._update_template_cache(default_template)
                 return default_template
         except (IOError, OSError) as e:
             self.logger.error(f"加载HTML模板失败: {e}")
             self.logger.error(f"详细错误: {traceback.format_exc()}")
-            default_template = self._get_default_template()
-            self._update_template_cache(default_template)
+            default_template = await self._get_default_template()
+            await self._update_template_cache(default_template)
             return default_template
     
-    def _get_default_template(self) -> str:
+    async def _get_fallback_template(self) -> str:
+        """获取纯占位符回退模板（不含Jinja2语法）
+        
+        当Jinja2不可用时使用的安全模板，只使用简单的{{ key }}占位符，
+        不包含任何Jinja2特有的语法（如循环、过滤器等）。
+        """
+        return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
+            padding: 30px;
+            min-height: 100vh;
+        }
+        .title {
+            text-align: center;
+            font-size: 28px;
+            color: #1F2937;
+            margin-bottom: 25px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        }
+        .user-list {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.9);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        .user-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #E5E7EB;
+            transition: transform 0.2s;
+        }
+        .user-item:hover {
+            transform: translateX(10px);
+        }
+        .user-item-current {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #E5E7EB;
+            transition: transform 0.2s;
+            background-color: #F3E8FF;
+            border-radius: 12px;
+        }
+        .user-item-current:hover {
+            transform: translateX(10px);
+        }
+        .rank {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: #3B82F6;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-right: 20px;
+        }
+        .rank-current {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: #8B5CF6;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-right: 20px;
+        }
+        .avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            margin-right: 20px;
+            border: 3px solid #ffffff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .info {
+            flex: 1;
+        }
+        .name-date {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .nickname {
+            font-size: 18px;
+            font-weight: bold;
+            color: #1F2937;
+        }
+        .date {
+            font-size: 14px;
+            color: #6B7280;
+        }
+        .stats {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .count {
+            font-size: 16px;
+            font-weight: bold;
+            color: #3B82F6;
+        }
+        .percentage {
+            font-size: 14px;
+            color: #6B7280;
+        }
+    </style>
+</head>
+<body>
+    <div class="title">{{ group_name }}[{{ group_id }}]</div>
+    <div class="title">{{ title }}</div>
+    <div class="user-list">
+        {{ user_items }}
+    </div>
+</body>
+</html>"""
+
+    async def _get_default_template(self) -> str:
         """获取默认HTML模板（优化版本）"""
         # 尝试从缓存获取默认模板
         default_cache_key = 'default_template'
-        with self._cache_lock:
+        async with self._cache_lock:
             cached_default = self._template_cache.get(default_cache_key)
         
         if cached_default:
@@ -872,7 +1012,7 @@ class ImageGenerator:
 """
         
         # 缓存默认模板
-        with self._cache_lock:
+        async with self._cache_lock:
             self._template_cache[default_cache_key] = {
                 'content': default_template,
                 'template': self.jinja_env.from_string(default_template) if self.jinja_env else None
@@ -918,15 +1058,15 @@ class ImageGenerator:
         except (IOError, OSError) as e:
             return {"status": "error", "error": str(e)}
     
-    def clear_cache(self):
+    async def clear_cache(self):
         """清理模板缓存"""
-        with self._cache_lock:
+        async with self._cache_lock:
             self._template_cache.clear()
             self.logger.info("模板缓存已清理")
     
-    def get_performance_stats(self) -> Dict[str, Any]:
+    async def get_performance_stats(self) -> Dict[str, Any]:
         """获取性能统计信息"""
-        cache_stats = self.get_cache_stats()
+        cache_stats = await self.get_cache_stats()
         
         return {
             'cache_stats': cache_stats,
@@ -937,10 +1077,10 @@ class ImageGenerator:
             'template_exists': self.template_path.exists() if self.template_path else False
         }
     
-    def optimize_for_batch_generation(self):
+    async def optimize_for_batch_generation(self):
         """为批量生成优化配置"""
         # 预热缓存
-        self._preload_templates()
+        await self._preload_templates()
         
         # 启用更激进的缓存策略
         if self.jinja_env:
@@ -971,14 +1111,14 @@ class ImageGenerator:
         if not users:
             return []
         
-        total_messages = sum(getattr(user, 'display_total', user.total) for user in users)
+        total_messages = sum(getattr(user, 'display_total', user.message_count) for user in users)
         
         # 使用列表推导式和生成器表达式优化性能
         user_items = []
         for i, user in enumerate(users):
             is_current_user = current_user_id and user.user_id == current_user_id
             # 使用时间段内的发言数
-            user_messages = getattr(user, 'display_total', user.total)
+            user_messages = getattr(user, 'display_total', user.message_count)
             user_items.append({
                 'rank': i + 1,
                 'nickname': self._cached_escape_html(user.nickname),
@@ -996,7 +1136,7 @@ class ImageGenerator:
             if current_user_data:
                 # 使用时间段内的发言数计算排名
                 current_user_messages = getattr(current_user_data, 'display_total', current_user_data.total)
-                current_rank = sum(1 for user in users if getattr(user, 'display_total', user.total) > current_user_messages) + 1
+                current_rank = sum(1 for user in users if getattr(user, 'display_total', user.message_count) > current_user_messages) + 1
                 user_items.append({
                     'rank': current_rank,
                     'nickname': self._cached_escape_html(current_user_data.nickname),

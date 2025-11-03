@@ -365,9 +365,13 @@ class MessageStatsPlugin(Star):
     
     @filter.command("设置发言榜图片")
     async def set_image_mode(self, event: AstrMessageEvent):
-        """设置排行榜图片模式
+        """设置排行榜的显示模式（图片或文字）
         
-        将返回:"排行榜显示模式已设置为 图片模式！"
+        根据用户输入的参数设置排行榜的显示模式：
+        - 1/true/开/on/yes: 设置为图片模式
+        - 0/false/关/off/no: 设置为文字模式
+        
+        返回相应的设置成功提示信息。
         """
         try:
             # 获取群组ID
@@ -484,25 +488,89 @@ class MessageStatsPlugin(Star):
     # ========== 私有方法 ==========
     
     async def _get_user_display_name(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
-        """获取用户的群昵称,优先使用群昵称,其次使用QQ昵称"""
+        """获取用户的群昵称,优先使用群昵称,其次使用QQ昵称（重构版 - 使用统一缓存逻辑）"""
         # 非QQ群聊事件直接使用备用方案
         if not isinstance(event, AiocqhttpMessageEvent):
             return await self._get_fallback_nickname(event, user_id)
         
-        # 快速查找（缓存优先）
-        display_name = await self._find_user_fast(group_id, user_id)
-        if display_name:
-            return display_name
+        # 使用统一的昵称获取逻辑
+        return await self._get_user_nickname_unified(event, group_id, user_id)
+    
+    async def _get_user_nickname_unified(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
+        """统一的用户昵称获取方法 - 按顺序检查各级缓存
         
-        # 获取群成员信息并查找
-        members_info = await self._get_group_members_cache(event, group_id)
-        if members_info:
-            display_name = await self._find_user_in_members(members_info, user_id)
-            if display_name:
-                return display_name
+        整合了分散的缓存逻辑，提供清晰的查找流程：
+        1. 检查昵称缓存
+        2. 检查群成员字典缓存  
+        3. 检查群成员列表缓存
+        4. 从API获取并填充所有缓存
+        5. 使用备用方案
         
-        # 所有查找失败，使用备用方案
-        return await self._get_fallback_nickname(event, user_id)
+        Args:
+            event (AstrMessageEvent): 消息事件对象
+            group_id (str): 群组ID
+            user_id (str): 用户ID
+            
+        Returns:
+            str: 用户的显示昵称
+        """
+        try:
+            # 步骤1: 检查昵称缓存（最高优先级）
+            nickname_cache_key = f"nickname_{user_id}"
+            if nickname_cache_key in self.user_nickname_cache:
+                return self.user_nickname_cache[nickname_cache_key]
+            
+            # 步骤2: 检查群成员字典缓存
+            dict_cache_key = f"group_members_dict_{group_id}"
+            if dict_cache_key in self.group_members_dict_cache:
+                members_dict = self.group_members_dict_cache[dict_cache_key]
+                if user_id in members_dict:
+                    member = members_dict[user_id]
+                    display_name = member.get("card") or member.get("nickname")
+                    if display_name:
+                        # 填充昵称缓存
+                        self.user_nickname_cache[nickname_cache_key] = display_name
+                        return display_name
+            
+            # 步骤3: 检查群成员列表缓存
+            list_cache_key = f"group_members_{group_id}"
+            if list_cache_key in self.group_members_cache:
+                members_info = self.group_members_cache[list_cache_key]
+                # 在成员列表中查找
+                for member in members_info:
+                    if str(member.get("user_id", "")) == user_id:
+                        display_name = member.get("card") or member.get("nickname")
+                        if display_name:
+                            # 填充所有相关缓存
+                            self.user_nickname_cache[nickname_cache_key] = display_name
+                            # 重建字典缓存以备后续快速查找
+                            members_dict = {str(m.get("user_id", "")): m for m in members_info if m.get("user_id")}
+                            self.group_members_dict_cache[dict_cache_key] = members_dict
+                            return display_name
+                # 如果在缓存的成员列表中没找到，说明可能已过期，继续下一步
+            
+            # 步骤4: 从API获取群成员信息并填充所有缓存
+            members_info = await self._fetch_group_members_from_api(event, group_id)
+            if members_info:
+                # 重建字典缓存
+                members_dict = {str(m.get("user_id", "")): m for m in members_info if m.get("user_id")}
+                self.group_members_dict_cache[dict_cache_key] = members_dict
+                
+                # 在新获取的成员列表中查找
+                if user_id in members_dict:
+                    member = members_dict[user_id]
+                    display_name = member.get("card") or member.get("nickname")
+                    if display_name:
+                        # 填充昵称缓存
+                        self.user_nickname_cache[nickname_cache_key] = display_name
+                        return display_name
+            
+            # 步骤5: 所有查找失败，使用备用方案
+            return await self._get_fallback_nickname(event, user_id)
+            
+        except (ValueError, TypeError, KeyError, AttributeError) as e:
+            self.logger.warning(f"统一昵称获取失败: {e}")
+            return await self._get_fallback_nickname(event, user_id)
     
     async def _get_fallback_nickname(self, event: AstrMessageEvent, user_id: str) -> str:
         """获取备用昵称
@@ -534,27 +602,12 @@ class MessageStatsPlugin(Star):
             return f"用户{user_id}"
     
     async def _find_user_fast(self, group_id: str, user_id: str) -> Optional[str]:
-        """快速查找用户昵称 - 使用预构建字典缓存"""
-        try:
-            # 检查用户昵称缓存
-            nickname_cache_key = f"nickname_{user_id}"
-            if nickname_cache_key in self.user_nickname_cache:
-                return self.user_nickname_cache[nickname_cache_key]
-            
-            # 检查群成员字典缓存
-            dict_cache_key = f"group_members_dict_{group_id}"
-            if dict_cache_key in self.group_members_dict_cache:
-                members_dict = self.group_members_dict_cache[dict_cache_key]
-                if user_id in members_dict:
-                    member = members_dict[user_id]
-                    display_name = member.get("card") or member.get("nickname")
-                    if display_name:
-                        # 缓存昵称结果
-                        self.user_nickname_cache[nickname_cache_key] = display_name
-                        return display_name
-        except (ValueError, TypeError, KeyError) as e:
-            self.logger.warning(f"快速查找失败: {e}")
-        
+        """快速查找用户昵称 - 使用预构建字典缓存（已简化，逻辑移至统一方法）"""
+        # 注意：此方法保留用于向后兼容，核心逻辑已移至_get_user_nickname_unified
+        # 为了性能考虑，这里只做最快速的缓存检查
+        nickname_cache_key = f"nickname_{user_id}"
+        if nickname_cache_key in self.user_nickname_cache:
+            return self.user_nickname_cache[nickname_cache_key]
         return None
     
     def clear_user_cache(self, user_id: str = None):
@@ -603,13 +656,14 @@ class MessageStatsPlugin(Star):
         return None
     
     async def _find_user_in_members(self, members_info: List[Dict[str, Any]], user_id: str) -> Optional[str]:
-        """在群成员列表中查找用户昵称（优化版）"""
-        # 检查缓存
+        """在群成员列表中查找用户昵称（已简化，逻辑移至统一方法）"""
+        # 注意：此方法保留用于向后兼容，核心逻辑已移至_get_user_nickname_unified
+        # 为了性能考虑，这里只做最快速的缓存检查和简单查找
         cache_key = f"nickname_{user_id}"
         if cache_key in self.user_nickname_cache:
             return self.user_nickname_cache[cache_key]
         
-        # 使用字典方式快速查找（已优化，无需回退到列表遍历）
+        # 简单的字典查找（不重建缓存）
         members_dict = {str(m.get("user_id", "")): m for m in members_info if m.get("user_id")}
         member = members_dict.get(user_id)
         
@@ -701,8 +755,8 @@ class MessageStatsPlugin(Star):
                 yield event.plain_result("这个时间段还没有人发言呢~")
                 return
             
-            # 对数据进行排序
-            filtered_data = sorted(filtered_data, key=lambda x: x.total, reverse=True)
+            # 对数据进行排序，优先使用display_total（时间段内发言数），否则使用message_count（总发言数）
+            filtered_data = sorted(filtered_data, key=lambda x: getattr(x, 'display_total', x.message_count), reverse=True)
             
             # 获取配置
             config = await self.data_manager.get_config()
@@ -781,7 +835,7 @@ class MessageStatsPlugin(Star):
                     user_copy = UserData(
                         user_id=user.user_id,
                         nickname=user.nickname,
-                        total=user.total,  # 保持原始总数不变
+                        message_count=user.message_count,  # 保持原始总数不变
                         history=user.history.copy(),  # 复制历史记录
                         last_date=user.last_date
                     )
@@ -810,7 +864,7 @@ class MessageStatsPlugin(Star):
                     user_copy = UserData(
                         user_id=user.user_id,
                         nickname=user.nickname,
-                        total=user.total,  # 保持原始总数不变
+                        message_count=user.message_count,  # 保持原始总数不变
                         history=user.history.copy(),  # 复制历史记录
                         last_date=user.last_date
                     )
@@ -838,7 +892,7 @@ class MessageStatsPlugin(Star):
                     user_copy = UserData(
                         user_id=user.user_id,
                         nickname=user.nickname,
-                        total=user.total,  # 保持原始总数不变
+                        message_count=user.message_count,  # 保持原始总数不变
                         history=user.history.copy(),  # 复制历史记录
                         last_date=user.last_date
                     )
@@ -871,17 +925,17 @@ class MessageStatsPlugin(Star):
     def _generate_text_message(self, users: List[UserData], group_info: GroupInfo, title: str, config: PluginConfig) -> str:
         """生成文字消息"""
         # 计算时间段内的总发言数
-        total_messages = sum(getattr(user, 'display_total', user.total) for user in users)
+        total_messages = sum(getattr(user, 'display_total', user.message_count) for user in users)
         
         # 排序并限制数量 - 使用时间段内的发言数进行排序
-        sorted_users = sorted(users, key=lambda x: getattr(x, 'display_total', x.total), reverse=True)
+        sorted_users = sorted(users, key=lambda x: getattr(x, 'display_total', x.message_count), reverse=True)
         top_users = sorted_users[:config.rand]
         
         msg = [f"{title}\n发言总数: {total_messages}\n━━━━━━━━━━━━━━\n"]
         
         for i, user in enumerate(top_users):
             # 使用时间段内的发言数计算百分比
-            user_messages = getattr(user, 'display_total', user.total)
+            user_messages = getattr(user, 'display_total', user.message_count)
             percentage = ((user_messages / total_messages) * 100) if total_messages > 0 else 0
             msg.append(f"第{i + 1}名:{user.nickname}·{user_messages}次(占比{percentage:.2f}%)\n")
         

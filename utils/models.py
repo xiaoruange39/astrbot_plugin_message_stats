@@ -165,9 +165,11 @@ class UserData:
     Attributes:
         user_id (str): 用户唯一标识符
         nickname (str): 用户昵称
-        total (int): 总发言次数，默认为0
+        message_count (int): 总发言次数，默认为0
         history (List[MessageDate]): 发言日期历史记录列表
         last_date (Optional[str]): 最后发言日期的字符串表示
+        first_message_time (Optional[int]): 首次发言时间戳
+        last_message_time (Optional[int]): 最后发言时间戳
         
     Methods:
         add_message(): 添加新的消息记录
@@ -179,20 +181,22 @@ class UserData:
     Example:
         >>> user = UserData("123456", "用户昵称")
         >>> user.add_message(MessageDate(2024, 1, 15))
-        >>> print(user.total)
+        >>> print(user.message_count)
         1
     """
     user_id: str
     nickname: str
-    total: int = 0
+    message_count: int = 0
     history: List[MessageDate] = field(default_factory=list)
     last_date: Optional[str] = None
+    first_message_time: Optional[int] = None
+    last_message_time: Optional[int] = None
     
     def add_message(self, message_date: MessageDate):
         """添加消息记录
         
         增加用户的发言计数并记录发言日期。每次发言都会记录到历史中，
-        保持total字段与实际发言次数的一致性。
+        保持message_count字段与实际发言次数的一致性。
         
         Args:
             message_date (MessageDate): 消息日期对象
@@ -203,10 +207,10 @@ class UserData:
         Example:
             >>> user = UserData("123", "用户")
             >>> user.add_message(MessageDate(2024, 1, 15))
-            >>> print(user.total)
+            >>> print(user.message_count)
             1
         """
-        self.total += 1
+        self.message_count += 1
         
         # 每次发言都添加到历史记录中
         self.history.append(message_date)
@@ -266,9 +270,11 @@ class UserData:
             Dict[str, Any]: 包含用户数据的字典，包括：
                 - user_id: 用户ID
                 - nickname: 用户昵称
-                - total: 总发言次数
+                - message_count: 总发言次数
                 - history: 发言日期历史（字符串列表）
                 - last_date: 最后发言日期
+                - first_message_time: 首次发言时间戳
+                - last_message_time: 最后发言时间戳
                 
         Example:
             >>> user = UserData("123", "用户")
@@ -279,9 +285,11 @@ class UserData:
         return {
             "user_id": self.user_id,
             "nickname": self.nickname,
-            "total": self.total,
+            "message_count": self.message_count,
             "history": [str(h) for h in self.history],
-            "last_date": self.last_date
+            "last_date": self.last_date,
+            "first_message_time": self.first_message_time,
+            "last_message_time": self.last_message_time
         }
     
     @classmethod
@@ -301,7 +309,7 @@ class UserData:
             ValueError: 当数据格式错误时抛出
             
         Example:
-            >>> data = {"user_id": "123", "nickname": "用户", "total": 5}
+            >>> data = {"user_id": "123", "nickname": "用户", "message_count": 5}
             >>> user = UserData.from_dict(data)
             >>> print(user.user_id)
             '123'
@@ -309,8 +317,10 @@ class UserData:
         user_data = cls(
             user_id=data["user_id"],
             nickname=data["nickname"],
-            total=data.get("total", 0),
-            last_date=data.get("last_date")
+            message_count=data.get("message_count", 0),
+            last_date=data.get("last_date"),
+            first_message_time=data.get("first_message_time"),
+            last_message_time=data.get("last_message_time")
         )
         
         # 重建history
@@ -325,7 +335,7 @@ class UserData:
         """按总消息数排序"""
         if not isinstance(other, UserData):
             return NotImplemented
-        return self.total < other.total  # 升序排列，用于sorted()函数
+        return self.message_count < other.message_count  # 升序排列，用于sorted()函数
 
 
 @dataclass
