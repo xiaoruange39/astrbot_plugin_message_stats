@@ -206,14 +206,15 @@ class PluginCache:
     统一管理所有 TTLCache 实例（数据、配置、图片等）。
     """
     
-    def __init__(self, logger=None):
+    def __init__(self, data_cache_maxsize=1000, data_cache_ttl=300, 
+                 config_cache_maxsize=10, config_cache_ttl=60, logger=None):
         self.logger = logger or astrbot_logger
         
         # 缓存设置
-        self.data_cache_maxsize = 1000
-        self.data_cache_ttl = 300  # 5分钟
-        self.config_cache_maxsize = 10
-        self.config_cache_ttl = 60  # 1分钟
+        self.data_cache_maxsize = data_cache_maxsize
+        self.data_cache_ttl = data_cache_ttl
+        self.config_cache_maxsize = config_cache_maxsize
+        self.config_cache_ttl = config_cache_ttl
         
         # 创建缓存实例
         self.data_cache = TTLCache(maxsize=self.data_cache_maxsize, ttl=self.data_cache_ttl)

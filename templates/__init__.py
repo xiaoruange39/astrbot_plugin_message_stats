@@ -107,13 +107,13 @@ def get_default_template() -> str:
         
         .nickname {{
             font-weight: bold;
-            color: #333;
+            color: #333333;
             font-size: 16px;
             margin-bottom: 2px;
         }}
         
         .count {{
-            color: #666;
+            color: #666666;
             font-size: 14px;
             font-weight: 500;
         }}

@@ -7,7 +7,6 @@
 
 import json
 import re
-import traceback
 import time
 from pathlib import Path
 from typing import List, Optional, Dict, Any
@@ -21,11 +20,12 @@ from collections import defaultdict
 from .models import UserData, PluginConfig, MessageDate
 from .data_stores import GroupDataStore, ConfigManager, PluginCache
 
-# 常量定义
-DATA_CACHE_MAXSIZE = 1000
-DATA_CACHE_TTL = 300  # 5分钟
-CONFIG_CACHE_MAXSIZE = 10
-CONFIG_CACHE_TTL = 60  # 1分钟
+# 缓存配置常量
+# 这些常量控制DataManager中缓存的行为，修改这些值会影响整个插件的缓存性能
+DATA_CACHE_MAXSIZE = 1000  # 数据缓存最大容量，用于缓存群组数据
+DATA_CACHE_TTL = 300  # 数据缓存生存时间（秒），5分钟后过期
+CONFIG_CACHE_MAXSIZE = 10  # 配置缓存最大容量，用于缓存插件配置
+CONFIG_CACHE_TTL = 60  # 配置缓存生存时间（秒），1分钟后过期
 
 
 class DataManager:
@@ -64,7 +64,13 @@ class DataManager:
         # 初始化各个专门的组件
         self.group_store = GroupDataStore(self.groups_dir, self.logger)
         self.config_manager = ConfigManager(self.config_file, self.logger)
-        self.cache_manager = PluginCache(self.logger)
+        self.cache_manager = PluginCache(
+            data_cache_maxsize=DATA_CACHE_MAXSIZE,
+            data_cache_ttl=DATA_CACHE_TTL,
+            config_cache_maxsize=CONFIG_CACHE_MAXSIZE,
+            config_cache_ttl=CONFIG_CACHE_TTL,
+            logger=self.logger
+        )
         
         # 群组级别的锁机制，防止并发安全问题
         self._group_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)

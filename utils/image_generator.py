@@ -14,7 +14,7 @@ import traceback
 import hashlib
 import json
 import uuid
-from functools import lru_cache
+
 
 from astrbot.api import logger as astrbot_logger
 
@@ -739,9 +739,12 @@ class ImageGenerator:
         safe_avatar_border = html.escape(styles['avatar_border'])
         
         # 使用字符串拼接而不是f-string，提高安全性
+        # 根据当前用户状态选择合适的排名样式类
+        rank_class = "rank-current" if item_data['is_current_user'] else "rank"
+        
         html_parts = [
             f'<div class="{css_classes["item"]}" style="{safe_separator_style}">',
-            f'    <div class="rank-number" style="color: {safe_rank_color}; font-weight: bold; font-size: 36px;">#{item_data["rank"]}</div>',
+            f'    <div class="{rank_class}">#{item_data["rank"]}</div>',
             f'    <img class="avatar" src="{safe_avatar_url}" style="border-color: {safe_avatar_border};" />',
             '    <div class="info">',
             '        <div class="name-date">',
@@ -917,28 +920,34 @@ class ImageGenerator:
             align-items: center;
             padding: 15px;
             border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s;
+            transition: transform 0.2s ease;
+            border-radius: 8px;
+            margin-bottom: 8px;
         }
         .user-item:hover {
             transform: translateX(10px);
+            background-color: rgba(59, 130, 246, 0.05);
         }
         .user-item-current {
             display: flex;
             align-items: center;
             padding: 15px;
             border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s;
-            background-color: #F3E8FF;
+            transition: transform 0.2s ease;
+            background: linear-gradient(135deg, #F3E8FF 0%, #EDE9FE 100%);
             border-radius: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.1);
         }
         .user-item-current:hover {
             transform: translateX(10px);
+            box-shadow: 0 4px 8px rgba(139, 92, 246, 0.2);
         }
         .rank {
             width: 50px;
             height: 50px;
             border-radius: 50%;
-            background: #3B82F6;
+            background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
             color: white;
             display: flex;
             align-items: center;
@@ -946,12 +955,17 @@ class ImageGenerator:
             font-size: 18px;
             font-weight: bold;
             margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank:hover {
+            transform: scale(1.1);
         }
         .rank-current {
             width: 50px;
             height: 50px;
             border-radius: 50%;
-            background: #8B5CF6;
+            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
             color: white;
             display: flex;
             align-items: center;
@@ -959,6 +973,11 @@ class ImageGenerator:
             font-size: 18px;
             font-weight: bold;
             margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank-current:hover {
+            transform: scale(1.1);
         }
         .avatar {
             width: 60px;
@@ -967,6 +986,10 @@ class ImageGenerator:
             margin-right: 20px;
             border: 3px solid #ffffff;
             box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: transform 0.2s ease;
+        }
+        .avatar:hover {
+            transform: scale(1.05);
         }
         .info {
             flex: 1;
@@ -1061,28 +1084,34 @@ class ImageGenerator:
             align-items: center;
             padding: 15px;
             border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s;
+            transition: transform 0.2s ease;
+            border-radius: 8px;
+            margin-bottom: 8px;
         }
         .user-item:hover {
             transform: translateX(10px);
+            background-color: rgba(59, 130, 246, 0.05);
         }
         .user-item-current {
             display: flex;
             align-items: center;
             padding: 15px;
             border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s;
-            background-color: #F3E8FF;
+            transition: transform 0.2s ease;
+            background: linear-gradient(135deg, #F3E8FF 0%, #EDE9FE 100%);
             border-radius: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.1);
         }
         .user-item-current:hover {
             transform: translateX(10px);
+            box-shadow: 0 4px 8px rgba(139, 92, 246, 0.2);
         }
         .rank {
             width: 50px;
             height: 50px;
             border-radius: 50%;
-            background: #3B82F6;
+            background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
             color: white;
             display: flex;
             align-items: center;
@@ -1090,12 +1119,17 @@ class ImageGenerator:
             font-size: 18px;
             font-weight: bold;
             margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank:hover {
+            transform: scale(1.1);
         }
         .rank-current {
             width: 50px;
             height: 50px;
             border-radius: 50%;
-            background: #EF4444;
+            background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
             color: white;
             display: flex;
             align-items: center;
@@ -1103,6 +1137,11 @@ class ImageGenerator:
             font-size: 18px;
             font-weight: bold;
             margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank-current:hover {
+            transform: scale(1.1);
         }
         .avatar {
             width: 60px;

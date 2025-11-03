@@ -274,8 +274,14 @@ class MessageStatsPlugin(Star):
             self.logger.error(f"记录消息统计失败(操作取消): {e}", exc_info=True)
         except (IOError, OSError) as e:
             self.logger.error(f"记录消息统计失败(系统错误): {e}", exc_info=True)
+        except AttributeError as e:
+            self.logger.error(f"记录消息统计失败(属性错误): {e}", exc_info=True)
+        except RuntimeError as e:
+            self.logger.error(f"记录消息统计失败(运行时错误): {e}", exc_info=True)
+        except ImportError as e:
+            self.logger.error(f"记录消息统计失败(导入错误): {e}", exc_info=True)
         except Exception as e:
-            self.logger.error(f"记录消息统计失败(未知错误): {e}", exc_info=True)
+            self.logger.error(f"记录消息统计失败(未预期的错误类型 {type(e).__name__}): {e}", exc_info=True)
     
     # ========== 排行榜命令 ==========
     
@@ -315,8 +321,17 @@ class MessageStatsPlugin(Star):
         except TypeError as e:
             self.logger.error(f"更新发言统计失败(类型错误): {e}", exc_info=True)
             yield event.plain_result("更新发言统计失败,请稍后重试")
+        except (IOError, OSError, FileNotFoundError) as e:
+            self.logger.error(f"更新发言统计失败(文件操作错误): {e}", exc_info=True)
+            yield event.plain_result("更新发言统计失败,请稍后重试")
+        except ValueError as e:
+            self.logger.error(f"更新发言统计失败(参数错误): {e}", exc_info=True)
+            yield event.plain_result("更新发言统计失败,请稍后重试")
+        except RuntimeError as e:
+            self.logger.error(f"更新发言统计失败(运行时错误): {e}", exc_info=True)
+            yield event.plain_result("更新发言统计失败,请稍后重试")
         except Exception as e:
-            self.logger.error(f"更新发言统计失败(未知错误): {e}", exc_info=True)
+            self.logger.error(f"更新发言统计失败(未预期的错误类型 {type(e).__name__}): {e}", exc_info=True)
             yield event.plain_result("更新发言统计失败,请稍后重试")
     
     @filter.command("发言榜")
@@ -402,8 +417,17 @@ class MessageStatsPlugin(Star):
         except KeyError as e:
             self.logger.error(f"设置排行榜数量失败(数据格式错误): {e}", exc_info=True)
             yield event.plain_result("设置失败,请稍后重试")
+        except (IOError, OSError, FileNotFoundError) as e:
+            self.logger.error(f"设置排行榜数量失败(文件操作错误): {e}", exc_info=True)
+            yield event.plain_result("设置失败,请稍后重试")
+        except AttributeError as e:
+            self.logger.error(f"设置排行榜数量失败(属性错误): {e}", exc_info=True)
+            yield event.plain_result("设置失败,请稍后重试")
+        except RuntimeError as e:
+            self.logger.error(f"设置排行榜数量失败(运行时错误): {e}", exc_info=True)
+            yield event.plain_result("设置失败,请稍后重试")
         except Exception as e:
-            self.logger.error(f"设置排行榜数量失败(未知错误): {e}", exc_info=True)
+            self.logger.error(f"设置排行榜数量失败(未预期的错误类型 {type(e).__name__}): {e}", exc_info=True)
             yield event.plain_result("设置失败,请稍后重试")
     
 
@@ -462,8 +486,17 @@ class MessageStatsPlugin(Star):
         except KeyError as e:
             self.logger.error(f"设置图片模式失败(数据格式错误): {e}", exc_info=True)
             yield event.plain_result("设置失败,请稍后重试")
+        except (IOError, OSError, FileNotFoundError) as e:
+            self.logger.error(f"设置图片模式失败(文件操作错误): {e}", exc_info=True)
+            yield event.plain_result("设置失败,请稍后重试")
+        except AttributeError as e:
+            self.logger.error(f"设置图片模式失败(属性错误): {e}", exc_info=True)
+            yield event.plain_result("设置失败,请稍后重试")
+        except RuntimeError as e:
+            self.logger.error(f"设置图片模式失败(运行时错误): {e}", exc_info=True)
+            yield event.plain_result("设置失败,请稍后重试")
         except Exception as e:
-            self.logger.error(f"设置图片模式失败(未知错误): {e}", exc_info=True)
+            self.logger.error(f"设置图片模式失败(未预期的错误类型 {type(e).__name__}): {e}", exc_info=True)
             yield event.plain_result("设置失败,请稍后重试")
     
     @filter.command("清除发言榜单")
@@ -515,8 +548,14 @@ class MessageStatsPlugin(Star):
         except TypeError as e:
             self.logger.error(f"刷新群成员缓存失败(类型错误): {e}", exc_info=True)
             yield event.plain_result("刷新缓存失败,请稍后重试！")
+        except (IOError, OSError) as e:
+            self.logger.error(f"刷新群成员缓存失败(系统错误): {e}", exc_info=True)
+            yield event.plain_result("刷新缓存失败,请稍后重试！")
+        except RuntimeError as e:
+            self.logger.error(f"刷新群成员缓存失败(运行时错误): {e}", exc_info=True)
+            yield event.plain_result("刷新缓存失败,请稍后重试！")
         except Exception as e:
-            self.logger.error(f"刷新群成员缓存失败(未知错误): {e}", exc_info=True)
+            self.logger.error(f"刷新群成员缓存失败(未预期的错误类型 {type(e).__name__}): {e}", exc_info=True)
             yield event.plain_result("刷新缓存失败,请稍后重试！")
     
     @filter.command("缓存状态")
@@ -553,8 +592,17 @@ class MessageStatsPlugin(Star):
         except KeyError as e:
             self.logger.error(f"显示缓存状态失败(数据格式错误): {e}", exc_info=True)
             yield event.plain_result("获取缓存状态失败,请稍后重试！")
+        except (IOError, OSError) as e:
+            self.logger.error(f"显示缓存状态失败(系统错误): {e}", exc_info=True)
+            yield event.plain_result("获取缓存状态失败,请稍后重试！")
+        except AttributeError as e:
+            self.logger.error(f"显示缓存状态失败(属性错误): {e}", exc_info=True)
+            yield event.plain_result("获取缓存状态失败,请稍后重试！")
+        except RuntimeError as e:
+            self.logger.error(f"显示缓存状态失败(运行时错误): {e}", exc_info=True)
+            yield event.plain_result("获取缓存状态失败,请稍后重试！")
         except Exception as e:
-            self.logger.error(f"显示缓存状态失败(未知错误): {e}", exc_info=True)
+            self.logger.error(f"显示缓存状态失败(未预期的错误类型 {type(e).__name__}): {e}", exc_info=True)
             yield event.plain_result("获取缓存状态失败,请稍后重试！")
     
     # ========== 私有方法 ==========
@@ -770,16 +818,35 @@ class MessageStatsPlugin(Star):
     async def _show_rank(self, event: AstrMessageEvent, rank_type: RankType):
         """显示排行榜 - 重构版本"""
         try:
+            self.logger.debug(f"调试信息: _show_rank方法开始执行")
             # 准备数据
             rank_data = await self._prepare_rank_data(event, rank_type)
+            self.logger.debug(f"调试信息: _prepare_rank_data执行完成，rank_data类型: {type(rank_data)}")
             if rank_data is None:
                 yield event.plain_result("无法获取排行榜数据,请检查群组信息或稍后重试")
                 return
             
             group_id, current_user_id, filtered_data, config, title, group_info = rank_data
+            self.logger.debug(f"调试信息: rank_data解包完成")
+            self.logger.debug(f"调试信息: group_id类型: {type(group_id)}, 值: {group_id}")
+            self.logger.debug(f"调试信息: current_user_id类型: {type(current_user_id)}, 值: {current_user_id}")
+            self.logger.debug(f"调试信息: filtered_data类型: {type(filtered_data)}, 长度: {len(filtered_data) if filtered_data else 0}")
+            self.logger.debug(f"调试信息: config类型: {type(config)}, send_pic: {config.send_pic if config else None}")
+            self.logger.debug(f"调试信息: title类型: {type(title)}, 值: {title}")
+            self.logger.debug(f"调试信息: group_info类型: {type(group_info)}")
+            if hasattr(group_info, '__dict__'):
+                self.logger.debug(f"调试信息: group_info属性: {group_info.__dict__}")
+            # 检查group_info对象是否有Path属性
+            for attr_name in dir(group_info):
+                if not attr_name.startswith('_'):
+                    attr_value = getattr(group_info, attr_name)
+                    self.logger.debug(f"调试信息: group_info.{attr_name}类型: {type(attr_value)}")
+                    if hasattr(attr_value, 'startswith'):
+                        self.logger.debug(f"调试信息: 发现有startswith方法的属性: {attr_name} = {attr_value}")
             
             # 根据配置选择显示模式
             if config.send_pic:
+                self.logger.debug(f"调试信息: 进入图片渲染模式")
                 async for result in self._render_rank_as_image(event, filtered_data, group_info, title, current_user_id, config):
                     yield result
             else:
@@ -998,66 +1065,42 @@ class MessageStatsPlugin(Star):
         if not history:
             return 0
         
-        # 优化is_sorted检查逻辑，减少不必要的遍历开销
-        # 只检查前几个和后几个元素，对于大数据集更高效
+        # 完整遍历检查列表是否真正有序，避免采样检查的误判问题
         is_sorted = True
         if len(history) > 1:
             try:
-                # 采样检查：检查开头、结尾和中间几个关键点
-                check_indices = [0, len(history) // 4, len(history) // 2, 3 * len(history) // 4, len(history) - 1]
-                
-                # 检查前几个元素是否递增
-                for i in range(min(3, len(history) - 1)):
+                # 完整遍历检查：确保列表真正有序
+                for i in range(len(history) - 1):
                     current_date = history[i].to_date() if hasattr(history[i], 'to_date') else history[i]
                     next_date = history[i + 1].to_date() if hasattr(history[i + 1], 'to_date') else history[i + 1]
                     if current_date > next_date:
                         is_sorted = False
                         break
-                
-                # 如果前面检查都通过，再检查后面几个元素
-                if is_sorted and len(history) > 10:
-                    for i in range(max(0, len(history) - 4), len(history) - 1):
-                        current_date = history[i].to_date() if hasattr(history[i], 'to_date') else history[i]
-                        next_date = history[i + 1].to_date() if hasattr(history[i + 1], 'to_date') else history[i + 1]
-                        if current_date > next_date:
-                            is_sorted = False
-                            break
-                            
+                        
             except (AttributeError, TypeError):
                 # 如果无法比较，假设未排序
                 is_sorted = False
         
-        # 如果未排序，使用asyncio.to_thread包装同步排序操作，避免阻塞事件循环
-        if not is_sorted and len(history) > 10:
-            try:
-                # 定义排序键函数
-                def sort_key_func(x):
-                    return x.to_date() if hasattr(x, 'to_date') else x
+        # 如果检测到列表确实有序，使用早停算法
+        if is_sorted:
+            count = 0
+            for hist_date in history:
+                # 转换为日期对象
+                hist_date_obj = hist_date.to_date() if hasattr(hist_date, 'to_date') else hist_date
                 
-                # 使用asyncio.to_thread包装同步排序操作
-                history = await asyncio.to_thread(sorted, history, key=sort_key_func)
-            except (AttributeError, TypeError):
-                # 排序失败，使用无序版本
-                return self._count_messages_in_period_unordered(history, start_date, end_date)
-        
-        # 使用高效算法计算
-        count = 0
-        for hist_date in history:
-            # 转换为日期对象
-            hist_date_obj = hist_date.to_date() if hasattr(hist_date, 'to_date') else hist_date
-            
-            # 检查是否在指定时间段内
-            if hist_date_obj < start_date:
-                continue
-            if hist_date_obj > end_date:
-                # 如果已排序，可以提前跳出循环
-                if is_sorted:
-                    break
-                else:
+                # 检查是否在指定时间段内
+                if hist_date_obj < start_date:
                     continue
-            count += 1
+                if hist_date_obj > end_date:
+                    # 已排序，可以提前跳出循环
+                    break
+                count += 1
+            
+            return count
         
-        return count
+        # 如果检测到列表无序，直接使用无序版本计算
+        else:
+            return self._count_messages_in_period_unordered(history, start_date, end_date)
     
     def _count_messages_in_period_unordered(self, history: List, start_date, end_date) -> int:
         """计算指定时间段内的消息数量（适用于未排序的历史记录）"""

@@ -10,7 +10,7 @@ from typing import Any, Optional, List, Dict, Callable
 from datetime import datetime, date
 from astrbot.api import logger as astrbot_logger
 import html
-from functools import wraps
+
 
 try:
     import bleach
