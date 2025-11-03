@@ -16,6 +16,13 @@ from functools import lru_cache
 
 from astrbot.api import logger as astrbot_logger
 
+# 常量定义
+IMAGE_WIDTH = 1200
+VIEWPORT_HEIGHT = 1
+BROWSER_TIMEOUT = 10000  # 毫秒
+DEFAULT_FONT_SIZE = 14
+ROW_HEIGHT = 30
+
 # Jinja2模板引擎
 try:
     from jinja2 import Template, Environment, select_autoescape, FileSystemLoader
@@ -98,9 +105,9 @@ class ImageGenerator:
         self.logger = astrbot_logger
         
         # 图片生成配置
-        self.width = 1200
-        self.timeout = 10000
-        self.viewport_height = 1
+        self.width = IMAGE_WIDTH
+        self.timeout = BROWSER_TIMEOUT
+        self.viewport_height = VIEWPORT_HEIGHT
         
         # 模板路径
         self.template_path = Path(__file__).parent.parent / "templates" / "rank_template.html"

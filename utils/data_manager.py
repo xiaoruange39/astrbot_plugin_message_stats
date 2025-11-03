@@ -20,6 +20,12 @@ from collections import defaultdict
 
 from .models import UserData, PluginConfig, MessageDate
 
+# 常量定义
+DATA_CACHE_MAXSIZE = 1000
+DATA_CACHE_TTL = 300  # 5分钟
+CONFIG_CACHE_MAXSIZE = 10
+CONFIG_CACHE_TTL = 60  # 1分钟
+
 
 class DataManager:
     """数据管理器
@@ -71,8 +77,8 @@ class DataManager:
         self.logger = astrbot_logger
         
         # 缓存设置 - 优化TTL设置
-        self.data_cache = TTLCache(maxsize=1000, ttl=300)  # 5分钟缓存，提高性能
-        self.config_cache = TTLCache(maxsize=10, ttl=60)  # 1分钟缓存，平衡实时性和性能
+        self.data_cache = TTLCache(maxsize=DATA_CACHE_MAXSIZE, ttl=DATA_CACHE_TTL)  # 5分钟缓存，提高性能
+        self.config_cache = TTLCache(maxsize=CONFIG_CACHE_MAXSIZE, ttl=CONFIG_CACHE_TTL)  # 1分钟缓存，平衡实时性和性能
         
         # 群组级别的锁机制，防止并发安全问题
         self._group_locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
@@ -186,7 +192,7 @@ class DataManager:
                 self.logger.info(f"已备份损坏文件到 {backup_path}，并创建新的空数据文件")
                 return []
                 
-            except Exception as e:
+            except (IOError, OSError, json.JSONDecodeError) as e:
                 self.logger.error(f"备份和重建文件失败: {e}")
                 return []
     
@@ -215,7 +221,7 @@ class DataManager:
             temp_file.replace(file_path)
             return True
             
-        except Exception as e:
+        except (IOError, OSError) as e:
             self.logger.error(f"安全保存文件失败: {e}")
             # 清理临时文件
             temp_file = file_path.with_suffix('.tmp')

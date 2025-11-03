@@ -3,20 +3,24 @@ AstrBot 群发言统计插件
 统计群成员发言次数,生成排行榜
 """
 
+# 标准库导入
 import asyncio
 import json
 import os
-from typing import List, Optional, Dict, Any
 from datetime import datetime, date, timedelta
+from typing import List, Optional, Dict, Any
+
+# 第三方库导入
 from cachetools import TTLCache
 
+# AstrBot框架导入
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
 from astrbot.api.event.filter import EventMessageType
 from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger as astrbot_logger
 import astrbot.api.message_components as Comp
 
-
+# 本地模块导入
 from .utils.data_manager import DataManager
 from .utils.image_generator import ImageGenerator, ImageGenerationError
 from .utils.validators import Validators, ValidationError
