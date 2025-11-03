@@ -363,6 +363,10 @@ class MessageStatsPlugin(Star):
             self.logger.error(f"设置排行榜数量失败: {e}")
             yield event.plain_result("设置失败,请稍后重试")
     
+    # 图片模式常量定义
+    IMAGE_MODE_ENABLE_ALIASES = {'1', 'true', '开', 'on', 'yes'}
+    IMAGE_MODE_DISABLE_ALIASES = {'0', 'false', '关', 'off', 'no'}
+    
     @filter.command("设置发言榜图片")
     async def set_image_mode(self, event: AstrMessageEvent):
         """设置排行榜的显示模式（图片或文字）
@@ -391,10 +395,10 @@ class MessageStatsPlugin(Star):
             
             # 验证模式
             mode = args[0].lower()
-            if mode in ['1', 'true', '开', 'on', 'yes']:
+            if mode in self.IMAGE_MODE_ENABLE_ALIASES:
                 send_pic = 1
                 mode_text = "图片模式"
-            elif mode in ['0', 'false', '关', 'off', 'no']:
+            elif mode in self.IMAGE_MODE_DISABLE_ALIASES:
                 send_pic = 0
                 mode_text = "文字模式"
             else:
@@ -645,8 +649,12 @@ class MessageStatsPlugin(Star):
             self.logger.warning(f"获取群成员列表失败(数据格式错误): {e}")
         except (ConnectionError, TimeoutError, OSError) as e:
             self.logger.warning(f"获取群成员列表失败(网络错误): {e}")
-        except (ImportError, RuntimeError, ValueError) as e:
-            self.logger.warning(f"获取群成员列表失败(系统错误): {e}")
+        except ImportError as e:
+            self.logger.warning(f"获取群成员列表失败(导入错误): {e}")
+        except RuntimeError as e:
+            self.logger.warning(f"获取群成员列表失败(运行时错误): {e}")
+        except ValueError as e:
+            self.logger.warning(f"获取群成员列表失败(数据格式错误): {e}")
         
         return None
     
@@ -695,9 +703,15 @@ class MessageStatsPlugin(Star):
         except (ConnectionError, TimeoutError) as e:
             self.logger.error(f"网络请求失败: {e}")
             yield event.plain_result("网络请求失败,请稍后重试")
-        except (ImportError, RuntimeError, ValueError) as e:
-            self.logger.error(f"系统错误: {e}")
+        except ImportError as e:
+            self.logger.error(f"导入错误: {e}")
             yield event.plain_result("系统错误,请联系管理员")
+        except RuntimeError as e:
+            self.logger.error(f"运行时错误: {e}")
+            yield event.plain_result("系统错误,请联系管理员")
+        except ValueError as e:
+            self.logger.error(f"数据格式错误: {e}")
+            yield event.plain_result("数据格式错误,请联系管理员")
     
     async def _prepare_rank_data(self, event: AstrMessageEvent, rank_type: RankType):
         """准备排行榜数据"""
@@ -772,8 +786,18 @@ class MessageStatsPlugin(Star):
             # 回退到文字模式
             text_msg = self._generate_text_message(filtered_data, group_info, title, config)
             yield event.plain_result(text_msg)
-        except (ImportError, RuntimeError, ValueError) as e:
-            self.logger.error(f"图片渲染失败: {e}")
+        except ImportError as e:
+            self.logger.error(f"图片渲染失败(导入错误): {e}")
+            # 回退到文字模式
+            text_msg = self._generate_text_message(filtered_data, group_info, title, config)
+            yield event.plain_result(text_msg)
+        except RuntimeError as e:
+            self.logger.error(f"图片渲染失败(运行时错误): {e}")
+            # 回退到文字模式
+            text_msg = self._generate_text_message(filtered_data, group_info, title, config)
+            yield event.plain_result(text_msg)
+        except ValueError as e:
+            self.logger.error(f"图片渲染失败(数据格式错误): {e}")
             # 回退到文字模式
             text_msg = self._generate_text_message(filtered_data, group_info, title, config)
             yield event.plain_result(text_msg)

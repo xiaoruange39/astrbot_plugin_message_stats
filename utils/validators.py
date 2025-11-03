@@ -549,7 +549,7 @@ class Validators:
         
         # 检查是否有隐藏的危险模式
         for part in path_parts:
-            if part in ['..', '.'] and part != '.':
+            if '..' in part:
                 raise ValidationError("文件路径包含路径遍历攻击")
         
         # 使用 pathlib 进行进一步的安全检查

@@ -62,13 +62,7 @@ class DataManager:
             data_dir (str): 数据目录路径，由StarTools.get_data_dir()确定
         """
         if data_dir is None:
-            # 导入StarTools并获取标准数据目录
-            try:
-                from astrbot.core.platform.star import StarTools
-                self.data_dir = Path(StarTools.get_data_dir())
-            except ImportError:
-                # 如果StarTools不可用，抛出异常而不是静默使用备用路径
-                raise ImportError("无法导入StarTools，必须使用StarTools.get_data_dir()获取数据目录")
+            raise ValueError("data_dir不能为None。请在插件初始化时提供正确的数据目录路径")
         else:
             self.data_dir = Path(data_dir)
         self.groups_dir = self.data_dir / "groups"
@@ -988,17 +982,27 @@ class DataManager:
             
             cleaned_count = 0
             
-            for group_file in self.groups_dir.glob("*.json"):
+            # 获取所有群组文件
+            group_files = list(self.groups_dir.glob("*.json"))
+            
+            # 并发执行 stat 检查
+            async def check_and_clean(file_path):
                 try:
                     # 使用 asyncio.to_thread 将同步的 stat() 调用移到工作线程
-                    file_stat = await asyncio.to_thread(group_file.stat)
+                    file_stat = await asyncio.to_thread(file_path.stat)
                     if file_stat.st_mtime < cutoff_time:
-                        group_id = group_file.stem
+                        group_id = file_path.stem
                         await self.clear_group_data(group_id)
-                        cleaned_count += 1
                         self.logger.info(f"已清理群组 {group_id} 的旧数据")
+                        return True
+                    return False
                 except Exception as e:
-                    self.logger.error(f"清理群组 {group_file.stem} 数据失败: {e}")
+                    self.logger.error(f"清理群组 {file_path.stem} 数据失败: {e}")
+                    return False
+            
+            # 并发执行所有文件的检查和清理
+            results = await asyncio.gather(*[check_and_clean(f) for f in group_files])
+            cleaned_count = sum(results)
             
             self.logger.info(f"数据清理完成，共清理 {cleaned_count} 个群组")
             

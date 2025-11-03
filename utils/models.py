@@ -8,10 +8,14 @@
 - date_utils: 日期时间处理工具
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import List, Optional, Dict, Any
 from enum import Enum
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 
@@ -332,10 +336,12 @@ class UserData:
                         year, month, day = map(int, hist_str.split('-'))
                         user_data.history.append(MessageDate(year, month, day))
                     except (ValueError, IndexError) as e:
-                        # 跳过格式错误的日期记录
+                        # 跳过格式错误的日期记录，但记录警告
+                        logger.warning(f"跳过格式错误的日期记录 '{hist_str}': {e}")
                         continue
             except TypeError:
-                # 如果history不是可迭代对象，跳过
+                # 如果history不是可迭代对象，跳过但记录警告
+                logger.warning(f"history字段类型错误，不是可迭代对象: {type(data.get('history'))}")
                 pass
         
         return user_data

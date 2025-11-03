@@ -1147,8 +1147,4 @@ class ImageGenerator:
         if self.jinja_env:
             # Jinja2环境已经配置了缓存
             self.logger.info("批量生成优化已启用")
-    
-    @lru_cache(maxsize=128)
-    def _cached_escape_html(self, text: str) -> str:
-        """带缓存的HTML转义（使用LRU缓存）"""
-        return self._escape_html_safe(text)
+
