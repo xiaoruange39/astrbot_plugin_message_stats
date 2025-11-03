@@ -6,7 +6,10 @@
 """
 
 import json
+import re
 import traceback
+import time
+import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 import aiofiles
@@ -137,6 +140,13 @@ class DataManager:
     def _repair_corrupted_json(self, content: str) -> Optional[List[Dict]]:
         """尝试修复损坏的JSON数据
         
+        改进的修复逻辑，能够处理多种JSON损坏情况：
+        1. JSON列表末尾被截断
+        2. 不完整的JSON对象
+        3. 缺少闭合括号
+        4. 多余的逗号
+        5. 编码问题
+        
         Args:
             content (str): 损坏的JSON内容
             
@@ -144,7 +154,16 @@ class DataManager:
             Optional[List[Dict]]: 修复后的数据，如果无法修复则返回None
         """
         try:
-            # 尝试找到最后一个完整的JSON对象
+            # 首先尝试直接解析
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass
+        
+        try:
+            # 修复1: 清理多余的逗号
+            content = re.sub(r',(\s*[}\]])', r'\1', content)
+            
+            # 修复2: 处理列表末尾被截断的情况
             bracket_count = 0
             last_valid_pos = 0
             
@@ -161,10 +180,135 @@ class DataManager:
                 valid_content = content[:last_valid_pos]
                 return json.loads(valid_content)
             
-        except (json.JSONDecodeError, IndexError):
+            # 修复3: 尝试找到最后一个完整的对象
+            brace_count = 0
+            last_object_end = -1
+            
+            for i, char in enumerate(content):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        last_object_end = i + 1
+            
+            if last_object_end > 0 and '[' in content:
+                # 尝试重构JSON数组
+                start_bracket = content.find('[')
+                if start_bracket != -1:
+                    # 提取对象部分
+                    objects_content = content[start_bracket:last_object_end]
+                    # 手动构建完整的JSON
+                    objects = []
+                    current_obj = ""
+                    brace_depth = 0
+                    in_string = False
+                    escape_next = False
+                    
+                    for char in objects_content:
+                        if escape_next:
+                            escape_next = False
+                            current_obj += char
+                            continue
+                            
+                        if char == '\\':
+                            escape_next = True
+                            current_obj += char
+                            continue
+                            
+                        if char == '"' and not escape_next:
+                            in_string = not in_string
+                            
+                        if not in_string:
+                            if char == '{':
+                                brace_depth += 1
+                            elif char == '}':
+                                brace_depth -= 1
+                        
+                        current_obj += char
+                        
+                        # 如果我们到达了一个完整对象的结尾
+                        if brace_depth == 0 and current_obj.strip():
+                            try:
+                                obj = json.loads(current_obj.strip())
+                                if isinstance(obj, dict):
+                                    objects.append(obj)
+                                current_obj = ""
+                            except json.JSONDecodeError:
+                                # 如果这个对象解析失败，跳过它
+                                current_obj = ""
+                    
+                    if objects:
+                        return objects
+            
+            # 修复4: 尝试逐行解析
+            lines = content.split('\n')
+            objects = []
+            current_obj = ""
+            brace_depth = 0
+            in_string = False
+            escape_next = False
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                for char in line:
+                    if escape_next:
+                        escape_next = False
+                        current_obj += char
+                        continue
+                        
+                    if char == '\\':
+                        escape_next = True
+                        current_obj += char
+                        continue
+                        
+                    if char == '"' and not escape_next:
+                        in_string = not in_string
+                    
+                    if not in_string:
+                        if char == '{':
+                            brace_depth += 1
+                        elif char == '}':
+                            brace_depth -= 1
+                    
+                    current_obj += char
+                    
+                    # 如果我们到达了一个完整对象的结尾
+                    if brace_depth == 0 and current_obj.strip():
+                        try:
+                            obj = json.loads(current_obj.strip())
+                            if isinstance(obj, dict):
+                                objects.append(obj)
+                            current_obj = ""
+                        except json.JSONDecodeError:
+                            # 如果这个对象解析失败，跳过它
+                            current_obj = ""
+            
+            if objects:
+                return objects
+                
+        except (json.JSONDecodeError, IndexError, UnicodeDecodeError):
             pass
         
-        # 如果无法修复，返回空列表
+        # 修复5: 最后的尝试 - 清理所有可能的格式问题
+        try:
+            # 移除所有不可见字符
+            cleaned_content = ''.join(char for char in content if char.isprintable() or char in ['\n', '\r', '\t'])
+            
+            # 尝试修复常见的JSON格式问题
+            cleaned_content = re.sub(r',(\s*[}\]])', r'\1', cleaned_content)  # 移除多余逗号
+            cleaned_content = re.sub(r'([{\[])\s*,', r'\1', cleaned_content)  # 移除开头逗号
+            
+            # 尝试再次解析
+            return json.loads(cleaned_content)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            pass
+        
+        # 如果所有修复尝试都失败，返回空列表而不是None
+        # 这样可以保证数据的连续性
         return []
     
     async def _save_json_safely(self, file_path: Path, data: List[Dict]) -> bool:
@@ -272,9 +416,11 @@ class DataManager:
         except json.JSONDecodeError as e:
             self.logger.error(f"解析群组 {group_id} JSON数据失败: {e}")
             return []
-        except Exception as e:
-            self.logger.error(f"读取群组 {group_id} 数据失败: {e}")
-            self.logger.error(f"详细错误: {traceback.format_exc()}")
+        except (KeyError, TypeError, ValueError) as e:
+            self.logger.error(f"群组 {group_id} 数据格式错误: {e}")
+            return []
+        except asyncio.TimeoutError as e:
+            self.logger.error(f"读取群组 {group_id} 数据超时: {e}")
             return []
     
     async def save_group_data(self, group_id: str, users: List[UserData]):
@@ -319,8 +465,14 @@ class DataManager:
             else:
                 self.logger.error(f"群组 {group_id} 数据保存失败")
         
+        except (IOError, OSError) as e:
+            self.logger.error(f"保存群组 {group_id} 文件失败: {e}")
+        except (KeyError, TypeError, ValueError) as e:
+            self.logger.error(f"群组 {group_id} 数据格式错误: {e}")
+        except asyncio.TimeoutError as e:
+            self.logger.error(f"保存群组 {group_id} 数据超时: {e}")
         except Exception as e:
-            self.logger.error(f"保存群组 {group_id} 数据失败: {e}")
+            self.logger.error(f"保存群组 {group_id} 数据时发生未知错误: {e}")
             self.logger.error(f"详细错误: {traceback.format_exc()}")
     
     async def update_user_message(self, group_id: str, user_id: str, nickname: str) -> bool:
@@ -388,8 +540,17 @@ class DataManager:
                 await self.save_group_data(group_id, users)
                 return True
                 
+            except (IOError, OSError) as e:
+                self.logger.error(f"更新用户 {user_id} 消息统计时文件操作失败: {e}")
+                return False
+            except (KeyError, TypeError, ValueError) as e:
+                self.logger.error(f"用户 {user_id} 数据格式错误: {e}")
+                return False
+            except asyncio.TimeoutError as e:
+                self.logger.error(f"更新用户 {user_id} 消息统计超时: {e}")
+                return False
             except Exception as e:
-                self.logger.error(f"更新用户 {user_id} 消息统计失败: {e}")
+                self.logger.error(f"更新用户 {user_id} 消息统计时发生未知错误: {e}")
                 return False
     
     async def clear_group_data(self, group_id: str) -> bool:
@@ -417,8 +578,11 @@ class DataManager:
             self.logger.info(f"群组 {group_id} 数据已清空")
             return True
             
+        except (IOError, OSError) as e:
+            self.logger.error(f"清空群组 {group_id} 文件操作失败: {e}")
+            return False
         except Exception as e:
-            self.logger.error(f"清空群组 {group_id} 数据失败: {e}")
+            self.logger.error(f"清空群组 {group_id} 数据时发生未知错误: {e}")
             return False
     
     async def get_user_in_group(self, group_id: str, user_id: str) -> Optional[UserData]:
@@ -439,8 +603,14 @@ class DataManager:
                 if user.user_id == user_id:
                     return user
             return None
+        except (IOError, OSError) as e:
+            self.logger.error(f"获取用户 {user_id} 在群组 {group_id} 中的信息时文件操作失败: {e}")
+            return None
+        except (KeyError, TypeError, ValueError) as e:
+            self.logger.error(f"用户 {user_id} 数据格式错误: {e}")
+            return None
         except Exception as e:
-            self.logger.error(f"获取用户 {user_id} 在群组 {group_id} 中的信息失败: {e}")
+            self.logger.error(f"获取用户 {user_id} 在群组 {group_id} 中的信息时发生未知错误: {e}")
             return None
     
     async def get_all_groups(self) -> List[str]:
@@ -455,8 +625,11 @@ class DataManager:
             group_files = list(self.groups_dir.glob("*.json"))
             group_ids = [file.stem for file in group_files if file.is_file()]
             return group_ids
+        except (IOError, OSError) as e:
+            self.logger.error(f"获取群组列表时文件操作失败: {e}")
+            return []
         except Exception as e:
-            self.logger.error(f"获取群组列表失败: {e}")
+            self.logger.error(f"获取群组列表时发生未知错误: {e}")
             return []
     
     # ========== 配置管理 ==========
@@ -526,8 +699,14 @@ class DataManager:
             
             self.logger.info("插件配置已保存")
             
+        except (IOError, OSError) as e:
+            self.logger.error(f"保存配置文件时文件操作失败: {e}")
+            raise
+        except (KeyError, TypeError, ValueError) as e:
+            self.logger.error(f"配置数据格式错误: {e}")
+            raise
         except Exception as e:
-            self.logger.error(f"保存配置文件失败: {e}")
+            self.logger.error(f"保存配置文件时发生未知错误: {e}")
             raise
     
     async def update_config(self, updates: Dict[str, Any]) -> bool:
@@ -555,8 +734,14 @@ class DataManager:
             await self.save_config(config)
             return True
             
+        except (IOError, OSError) as e:
+            self.logger.error(f"更新配置时文件操作失败: {e}")
+            return False
+        except (KeyError, TypeError, ValueError) as e:
+            self.logger.error(f"配置数据格式错误: {e}")
+            return False
         except Exception as e:
-            self.logger.error(f"更新配置失败: {e}")
+            self.logger.error(f"更新配置时发生未知错误: {e}")
             return False
     
     # ========== 缓存管理 ==========
@@ -577,8 +762,11 @@ class DataManager:
             if image_cache_key in self.data_cache:
                 return self.data_cache[image_cache_key]
             return None
+        except (KeyError, TypeError) as e:
+            self.logger.error(f"缓存键格式错误: {e}")
+            return None
         except Exception as e:
-            self.logger.error(f"获取缓存图片失败: {e}")
+            self.logger.error(f"获取缓存图片时发生未知错误: {e}")
             return None
     
     async def cache_image(self, cache_key: str, image_path: str) -> bool:
@@ -597,8 +785,11 @@ class DataManager:
             image_cache_key = f"image_{cache_key}"
             self.data_cache[image_cache_key] = image_path
             return True
+        except (KeyError, TypeError) as e:
+            self.logger.error(f"缓存键格式错误: {e}")
+            return False
         except Exception as e:
-            self.logger.error(f"缓存图片失败: {e}")
+            self.logger.error(f"缓存图片时发生未知错误: {e}")
             return False
     
     async def clear_cache(self, cache_type: str = "all"):
@@ -625,8 +816,10 @@ class DataManager:
                     del self.data_cache[key]
                 self.logger.info("图片缓存已清空")
                 
+        except (KeyError, TypeError) as e:
+            self.logger.error(f"缓存操作参数错误: {e}")
         except Exception as e:
-            self.logger.error(f"清空缓存失败: {e}")
+            self.logger.error(f"清空缓存时发生未知错误: {e}")
     
     def _generate_cache_key(self, prefix: str, *args) -> str:
         """生成缓存键
@@ -658,8 +851,11 @@ class DataManager:
                 "config_cache_maxsize": self.config_cache.maxsize,
                 "total_cache_size": len(self.data_cache) + len(self.config_cache)
             }
+        except (KeyError, TypeError, AttributeError) as e:
+            self.logger.error(f"缓存统计信息获取错误: {e}")
+            return {}
         except Exception as e:
-            self.logger.error(f"获取缓存统计失败: {e}")
+            self.logger.error(f"获取缓存统计时发生未知错误: {e}")
             return {}
     
     # ========== 统计功能 ==========
@@ -702,8 +898,26 @@ class DataManager:
                     "message_count": top_user.message_count
                 } if top_user else None
             }
+        except (IOError, OSError) as e:
+            self.logger.error(f"获取群组 {group_id} 统计信息时文件操作失败: {e}")
+            return {
+                "total_users": 0,
+                "total_messages": 0,
+                "active_users": 0,
+                "average_messages": 0,
+                "top_user": None
+            }
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            self.logger.error(f"群组 {group_id} 统计数据格式错误: {e}")
+            return {
+                "total_users": 0,
+                "total_messages": 0,
+                "active_users": 0,
+                "average_messages": 0,
+                "top_user": None
+            }
         except Exception as e:
-            self.logger.error(f"获取群组 {group_id} 统计信息失败: {e}")
+            self.logger.error(f"获取群组 {group_id} 统计信息时发生未知错误: {e}")
             return {
                 "total_users": 0,
                 "total_messages": 0,
@@ -729,8 +943,14 @@ class DataManager:
             # 按消息数降序排序
             sorted_users = sorted(users, key=lambda x: x.message_count, reverse=True)
             return sorted_users[:limit]
+        except (IOError, OSError) as e:
+            self.logger.error(f"获取群组 {group_id} 排行榜时文件操作失败: {e}")
+            return []
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            self.logger.error(f"群组 {group_id} 用户数据格式错误: {e}")
+            return []
         except Exception as e:
-            self.logger.error(f"获取群组 {group_id} 排行榜失败: {e}")
+            self.logger.error(f"获取群组 {group_id} 排行榜时发生未知错误: {e}")
             return []
     
     async def get_users_by_time_period(self, group_id: str, period: str) -> List[UserData]:
@@ -751,8 +971,14 @@ class DataManager:
             # 这里可以根据需要实现时间段过滤逻辑
             # 目前返回所有用户
             return users
+        except (IOError, OSError) as e:
+            self.logger.error(f"获取群组 {group_id} 时间段用户时文件操作失败: {e}")
+            return []
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            self.logger.error(f"群组 {group_id} 用户数据格式错误: {e}")
+            return []
         except Exception as e:
-            self.logger.error(f"获取群组 {group_id} 时间段用户失败: {e}")
+            self.logger.error(f"获取群组 {group_id} 时间段用户时发生未知错误: {e}")
             return []
     
     # ========== 数据导入导出 ==========
@@ -776,8 +1002,14 @@ class DataManager:
                 "users": [user.to_dict() for user in users],
                 "statistics": await self.get_group_statistics(group_id)
             }
+        except (IOError, OSError) as e:
+            self.logger.error(f"导出群组 {group_id} 数据时文件操作失败: {e}")
+            return None
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            self.logger.error(f"群组 {group_id} 数据格式错误: {e}")
+            return None
         except Exception as e:
-            self.logger.error(f"导出群组 {group_id} 数据失败: {e}")
+            self.logger.error(f"导出群组 {group_id} 数据时发生未知错误: {e}")
             return None
     
     async def import_group_data(self, group_id: str, data: Dict[str, Any]) -> bool:
@@ -808,8 +1040,14 @@ class DataManager:
             self.logger.info(f"群组 {group_id} 数据导入成功，共 {len(users)} 个用户")
             return True
             
+        except (IOError, OSError) as e:
+            self.logger.error(f"导入群组 {group_id} 数据时文件操作失败: {e}")
+            return False
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            self.logger.error(f"导入数据格式错误: {e}")
+            return False
         except Exception as e:
-            self.logger.error(f"导入群组 {group_id} 数据失败: {e}")
+            self.logger.error(f"导入群组 {group_id} 数据时发生未知错误: {e}")
             return False
     
     async def cleanup_old_data(self, days: int = 30):
@@ -821,7 +1059,6 @@ class DataManager:
             days (int): 保留天数，默认为30天
         """
         try:
-            import time
             current_time = time.time()
             cutoff_time = current_time - (days * 24 * 60 * 60)
             
@@ -840,8 +1077,12 @@ class DataManager:
             
             self.logger.info(f"数据清理完成，共清理 {cleaned_count} 个群组")
             
+        except (IOError, OSError) as e:
+            self.logger.error(f"数据清理时文件操作失败: {e}")
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"数据清理参数错误: {e}")
         except Exception as e:
-            self.logger.error(f"数据清理失败: {e}")
+            self.logger.error(f"数据清理时发生未知错误: {e}")
     
     async def backup_group_data(self, group_id: str) -> Optional[Path]:
         """备份群组数据
@@ -866,7 +1107,6 @@ class DataManager:
             backup_dir.mkdir(exist_ok=True)
             
             # 生成备份文件名（包含时间戳）
-            import datetime
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             backup_file = backup_dir / f"{group_id}_{timestamp}.json"
             
@@ -880,6 +1120,12 @@ class DataManager:
             self.logger.info(f"群组 {group_id} 数据已备份到: {backup_file}")
             return backup_file
             
+        except (IOError, OSError) as e:
+            self.logger.error(f"备份群组 {group_id} 数据时文件操作失败: {e}")
+            return None
+        except (ValueError, TypeError) as e:
+            self.logger.error(f"备份参数错误: {e}")
+            return None
         except Exception as e:
-            self.logger.error(f"备份群组 {group_id} 数据失败: {e}")
+            self.logger.error(f"备份群组 {group_id} 数据时发生未知错误: {e}")
             return None

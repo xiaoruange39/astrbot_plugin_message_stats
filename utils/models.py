@@ -7,10 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any, AsyncGenerator
 from enum import Enum
-import json
-import aiofiles
 import os
-import asyncio
 
 
 
@@ -517,6 +514,9 @@ class RankData:
 
 
 # 工具函数
+import json
+import aiofiles
+import asyncio
 
 
 async def load_json_file(file_path: str) -> Dict[str, Any]:

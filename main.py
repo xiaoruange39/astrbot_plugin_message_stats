@@ -547,8 +547,12 @@ class MessageStatsPlugin(Star):
                     if display_name:
                         self.user_nickname_cache[nickname_cache_key] = display_name
                         return display_name
+        except (AttributeError, KeyError, TypeError) as e:
+            self.logger.warning(f"获取群成员信息失败(数据格式错误): {e}")
+        except (ConnectionError, TimeoutError, OSError) as e:
+            self.logger.warning(f"获取群成员信息失败(网络错误): {e}")
         except Exception as e:
-            self.logger.warning(f"获取群成员信息失败: {e}")
+            self.logger.warning(f"获取群成员信息失败(未知错误): {e}")
         
         # 步骤4: 返回默认昵称
         return f"用户{user_id}"
@@ -632,7 +636,11 @@ class MessageStatsPlugin(Star):
                 
                 return members_info
         except (AttributeError, KeyError, TypeError) as e:
-            self.logger.warning(f"获取群成员列表失败: {e}")
+            self.logger.warning(f"获取群成员列表失败(数据格式错误): {e}")
+        except (ConnectionError, TimeoutError, OSError) as e:
+            self.logger.warning(f"获取群成员列表失败(网络错误): {e}")
+        except Exception as e:
+            self.logger.warning(f"获取群成员列表失败(未知错误): {e}")
         
         return None
     
@@ -729,20 +737,20 @@ class MessageStatsPlugin(Star):
                 yield event.plain_result("本群好像还没人说过话呢~")
                 return
             
-            # 根据类型筛选数据
-            filtered_data = await self._filter_data_by_rank_type(group_data, rank_type)
+            # 根据类型筛选数据并获取排序值
+            filtered_data_with_values = await self._filter_data_by_rank_type(group_data, rank_type)
             
-            if not filtered_data:
+            if not filtered_data_with_values:
                 yield event.plain_result("这个时间段还没有人发言呢~")
                 return
             
+            # 解包用户数据和对应的排序值
+            filtered_data = [(user_data, sort_value) for user_data, sort_value in filtered_data_with_values]
+            
             # 对数据进行排序，使用明确的排序键
-            def get_sort_key(user_data):
-                # 如果有display_total（时间段内发言数），优先使用
-                if hasattr(user_data, 'display_total'):
-                    return user_data.display_total
-                # 否则使用message_count（总发言数）
-                return user_data.message_count
+            def get_sort_key(item):
+                user_data, sort_value = item
+                return sort_value
             
             filtered_data = sorted(filtered_data, key=get_sort_key, reverse=True)
             
@@ -762,9 +770,12 @@ class MessageStatsPlugin(Star):
             # 根据配置选择显示模式
             if config.if_send_pic:
                 try:
+                    # 提取用户数据用于图片生成（只需要UserData对象）
+                    users_for_image = [user_data for user_data, _ in filtered_data]
+                    
                     # 使用图片生成器
                     image_path = await self.image_generator.generate_rank_image(
-                        filtered_data, group_info, title, current_user_id
+                        users_for_image, group_info, title, current_user_id
                     )
                     
                     # 检查图片文件是否存在
@@ -786,36 +797,39 @@ class MessageStatsPlugin(Star):
                 text_msg = self._generate_text_message(filtered_data, group_info, title, config)
                 yield event.plain_result(text_msg)
         
-        except IOError as e:
+        except (IOError, OSError, FileNotFoundError) as e:
             self.logger.error(f"文件操作失败: {e}")
             yield event.plain_result("文件操作失败,请检查权限")
-        except AttributeError as e:
-            self.logger.error(f"属性访问错误: {e}")
+        except (AttributeError, KeyError, TypeError) as e:
+            self.logger.error(f"数据格式错误: {e}")
             yield event.plain_result("数据格式错误,请联系管理员")
+        except (ConnectionError, TimeoutError) as e:
+            self.logger.error(f"网络请求失败: {e}")
+            yield event.plain_result("网络请求失败,请稍后重试")
         except Exception as e:
             self.logger.error(f"显示排行榜失败: {e}")
             yield event.plain_result("生成排行榜失败,请稍后重试")
     
-    async def _filter_data_by_rank_type(self, group_data: List[UserData], rank_type: RankType) -> List[UserData]:
+    async def _filter_data_by_rank_type(self, group_data: List[UserData], rank_type: RankType) -> List[tuple]:
         """根据排行榜类型筛选数据并计算时间段内的发言次数
         
-        修复副作用问题：不修改原始的UserData对象，创建新的副本用于排行榜显示
+        重构版本：返回包含用户数据和排序值的元组列表，避免魔法属性
         
         Args:
             group_data (List[UserData]): 原始用户数据列表
             rank_type (RankType): 排行榜类型
             
         Returns:
-            List[UserData]: 筛选后的用户数据列表（包含计算的时间段发言数）
+            List[tuple]: 包含(UserData, sort_value)元组的列表，sort_value用于排序
         """
         current_date = datetime.now().date()
         
         if rank_type == RankType.TOTAL:
-            # 总榜返回原始数据，不修改
-            return group_data
+            # 总榜：返回每个用户及其总发言数的元组
+            return [(user, user.message_count) for user in group_data]
         
         elif rank_type == RankType.DAILY:
-            # 计算今日发言次数，创建新对象避免副作用
+            # 今日榜：计算今日发言次数
             filtered_users = []
             for user in group_data:
                 if not user.history:
@@ -824,23 +838,13 @@ class MessageStatsPlugin(Star):
                 # 计算今日发言次数
                 today_count = user.get_message_count_in_period(current_date, current_date)
                 if today_count > 0:
-                    # 创建UserData副本，设置时间段内的发言数作为display_total
-                    # 保持原始total不变，用于其他逻辑
-                    user_copy = UserData(
-                        user_id=user.user_id,
-                        nickname=user.nickname,
-                        message_count=user.message_count,  # 保持原始总数不变
-                        history=user.history.copy(),  # 复制历史记录
-                        last_date=user.last_date
-                    )
-                    # 为排行榜显示添加临时属性（不修改原始对象）
-                    user_copy.display_total = today_count  # 时间段内的发言数
-                    filtered_users.append(user_copy)
+                    # 返回元组：(UserData, 今日发言数)
+                    filtered_users.append((user, today_count))
             
             return filtered_users
         
         elif rank_type == RankType.WEEKLY:
-            # 计算本周发言次数，创建新对象避免副作用
+            # 本周榜：计算本周发言次数
             filtered_users = []
             
             # 获取本周开始日期(周一)
@@ -854,22 +858,13 @@ class MessageStatsPlugin(Star):
                 # 计算本周发言次数
                 week_count = user.get_message_count_in_period(week_start, current_date)
                 if week_count > 0:
-                    # 创建UserData副本，设置时间段内的发言数作为display_total
-                    user_copy = UserData(
-                        user_id=user.user_id,
-                        nickname=user.nickname,
-                        message_count=user.message_count,  # 保持原始总数不变
-                        history=user.history.copy(),  # 复制历史记录
-                        last_date=user.last_date
-                    )
-                    # 为排行榜显示添加临时属性（不修改原始对象）
-                    user_copy.display_total = week_count  # 时间段内的发言数
-                    filtered_users.append(user_copy)
+                    # 返回元组：(UserData, 本周发言数)
+                    filtered_users.append((user, week_count))
             
             return filtered_users
         
         elif rank_type == RankType.MONTHLY:
-            # 计算本月发言次数，创建新对象避免副作用
+            # 本月榜：计算本月发言次数
             filtered_users = []
             
             # 获取本月开始日期
@@ -882,22 +877,13 @@ class MessageStatsPlugin(Star):
                 # 计算本月发言次数
                 month_count = user.get_message_count_in_period(month_start, current_date)
                 if month_count > 0:
-                    # 创建UserData副本，设置时间段内的发言数作为display_total
-                    user_copy = UserData(
-                        user_id=user.user_id,
-                        nickname=user.nickname,
-                        message_count=user.message_count,  # 保持原始总数不变
-                        history=user.history.copy(),  # 复制历史记录
-                        last_date=user.last_date
-                    )
-                    # 为排行榜显示添加临时属性（不修改原始对象）
-                    user_copy.display_total = month_count  # 时间段内的发言数
-                    filtered_users.append(user_copy)
+                    # 返回元组：(UserData, 本月发言数)
+                    filtered_users.append((user, month_count))
             
             return filtered_users
         
-        # 默认返回原始数据
-        return group_data
+        # 默认情况：返回原始数据
+        return [(user, user.message_count) for user in group_data]
     
     def _generate_title(self, rank_type: RankType) -> str:
         """生成标题"""
@@ -916,20 +902,32 @@ class MessageStatsPlugin(Star):
         else:
             return "发言榜单"
     
-    def _generate_text_message(self, users: List[UserData], group_info: GroupInfo, title: str, config: PluginConfig) -> str:
-        """生成文字消息"""
-        # 计算时间段内的总发言数
-        total_messages = sum(getattr(user, 'display_total', user.message_count) for user in users)
+    def _generate_text_message(self, users_with_values: List[tuple], group_info: GroupInfo, title: str, config: PluginConfig) -> str:
+        """生成文字消息
         
-        # 排序并限制数量 - 使用时间段内的发言数进行排序
-        sorted_users = sorted(users, key=lambda x: getattr(x, 'display_total', x.message_count), reverse=True)
+        Args:
+            users_with_values: 包含(UserData, sort_value)元组的列表
+            group_info: 群组信息
+            title: 排行榜标题
+            config: 插件配置
+            
+        Returns:
+            str: 格式化的文字消息
+        """
+        # 解包用户数据和排序值
+        users = [(user_data, sort_value) for user_data, sort_value in users_with_values]
+        
+        # 计算时间段内的总发言数
+        total_messages = sum(sort_value for _, sort_value in users)
+        
+        # 排序并限制数量
+        sorted_users = sorted(users, key=lambda x: x[1], reverse=True)
         top_users = sorted_users[:config.rand]
         
         msg = [f"{title}\n发言总数: {total_messages}\n━━━━━━━━━━━━━━\n"]
         
-        for i, user in enumerate(top_users):
+        for i, (user, user_messages) in enumerate(top_users):
             # 使用时间段内的发言数计算百分比
-            user_messages = getattr(user, 'display_total', user.message_count)
             percentage = ((user_messages / total_messages) * 100) if total_messages > 0 else 0
             msg.append(f"第{i + 1}名:{user.nickname}·{user_messages}次(占比{percentage:.2f}%)\n")
         

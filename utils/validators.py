@@ -464,15 +464,13 @@ class Validators:
         """清理HTML内容
         
         使用bleach库清理HTML内容，移除危险标签和属性。
+        如果bleach库未安装，则回退到使用html.escape进行基础HTML转义。
         
         Args:
             content (str): 要清理的HTML内容
             
         Returns:
             str: 清理后的安全HTML内容
-            
-        Raises:
-            ValidationError: 当bleach库未安装时抛出
             
         Example:
             >>> Validators.sanitize_html_content('<script>alert("xss")</script><p>Hello</p>')
@@ -482,7 +480,10 @@ class Validators:
             return ""
         
         if bleach is None:
-            raise ValidationError("HTML清理需要bleach库支持，请安装: pip install bleach")
+            # 记录警告日志
+            Validators.logger.warning("bleach库未安装，使用基础HTML转义作为备选方案")
+            # 回退到基础HTML转义
+            return html.escape(content)
         
         # 定义允许的标签和属性
         allowed_tags = ['p', 'br', 'strong', 'em', 'u', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 

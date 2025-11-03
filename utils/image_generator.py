@@ -114,9 +114,22 @@ class ImageGenerator:
         
         # 初始化Jinja2环境
         try:
-            asyncio.create_task(self._init_jinja2_env())
+            # 使用asyncio.create_task创建后台任务并正确处理异常
+            self._init_task = asyncio.create_task(self._init_jinja2_env())
+            # 添加异常处理回调，确保异常被捕获
+            self._init_task.add_done_callback(self._handle_init_exception)
         except Exception as e:
             self.logger.error(f"初始化Jinja2环境失败: {e}")
+            self.jinja_env = None
+    
+    def _handle_init_exception(self, task):
+        """处理初始化任务的异常"""
+        try:
+            if task.exception():
+                self.logger.error(f"Jinja2环境初始化异常: {task.exception()}")
+                self.jinja_env = None
+        except Exception as e:
+            self.logger.error(f"处理初始化异常时出错: {e}")
             self.jinja_env = None
     
     async def _init_jinja2_env(self):
@@ -453,8 +466,18 @@ class ImageGenerator:
                 # Jinja2不可用时，使用纯占位符回退模板
                 fallback_template = await self._get_fallback_template()
                 return self._render_fallback_template(fallback_template, template_data, user_items)
+        except (ValueError, TypeError, KeyError) as e:
+            self.logger.error(f"HTML模板渲染失败，模板数据错误: {e}")
+            # 使用安全的备用方法
+            fallback_template = await self._get_fallback_template()
+            return self._render_fallback_template(fallback_template, template_data, user_items)
+        except (IOError, OSError) as e:
+            self.logger.error(f"HTML模板渲染失败，文件操作错误: {e}")
+            # 使用安全的备用方法
+            fallback_template = await self._get_fallback_template()
+            return self._render_fallback_template(fallback_template, template_data, user_items)
         except Exception as e:
-            self.logger.error(f"HTML模板渲染失败: {e}")
+            self.logger.error(f"HTML模板渲染失败，未预期的错误: {e}")
             # 使用安全的备用方法
             fallback_template = await self._get_fallback_template()
             return self._render_fallback_template(fallback_template, template_data, user_items)
@@ -524,8 +547,36 @@ class ImageGenerator:
                     else:
                         safe_content = safe_content.replace('{{' + key + '}}', str(value))
                 return safe_content
+        except (ValueError, TypeError, KeyError) as e:
+            self.logger.error(f"空数据HTML模板渲染失败，模板数据错误: {e}")
+            # 回退到最简单的HTML
+            return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>发言排行榜</title>
+</head>
+<body>
+    <h1>发言排行榜</h1>
+    <p>暂无数据</p>
+</body>
+</html>"""
+        except (IOError, OSError) as e:
+            self.logger.error(f"空数据HTML模板渲染失败，文件操作错误: {e}")
+            # 回退到最简单的HTML
+            return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>发言排行榜</title>
+</head>
+<body>
+    <h1>发言排行榜</h1>
+    <p>暂无数据</p>
+</body>
+</html>"""
         except Exception as e:
-            self.logger.error(f"空数据HTML模板渲染失败: {e}")
+            self.logger.error(f"空数据HTML模板渲染失败，未预期的错误: {e}")
             # 回退到最简单的HTML
             return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -622,7 +673,7 @@ class ImageGenerator:
     def _get_item_styles(self, item_data: Dict[str, Any]) -> Dict[str, str]:
         """获取样式信息（优化版本）"""
         return {
-            'separator': "margin-top: 20px; border-top: 2px dashed #bdc3c7;" if item_data['is_separator'] else "",
+            'separator': "margin-top: 20px; border-top: 2px dashed #bdc3c7;" if item_data['is_separator'] else "margin-top: 10px;",
             'rank_color': "#EF4444" if item_data['is_current_user'] else "#3B82F6",
             'avatar_border': "#ffffff"
         }
