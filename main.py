@@ -818,35 +818,16 @@ class MessageStatsPlugin(Star):
     async def _show_rank(self, event: AstrMessageEvent, rank_type: RankType):
         """显示排行榜 - 重构版本"""
         try:
-            self.logger.debug(f"调试信息: _show_rank方法开始执行")
             # 准备数据
             rank_data = await self._prepare_rank_data(event, rank_type)
-            self.logger.debug(f"调试信息: _prepare_rank_data执行完成，rank_data类型: {type(rank_data)}")
             if rank_data is None:
                 yield event.plain_result("无法获取排行榜数据,请检查群组信息或稍后重试")
                 return
             
             group_id, current_user_id, filtered_data, config, title, group_info = rank_data
-            self.logger.debug(f"调试信息: rank_data解包完成")
-            self.logger.debug(f"调试信息: group_id类型: {type(group_id)}, 值: {group_id}")
-            self.logger.debug(f"调试信息: current_user_id类型: {type(current_user_id)}, 值: {current_user_id}")
-            self.logger.debug(f"调试信息: filtered_data类型: {type(filtered_data)}, 长度: {len(filtered_data) if filtered_data else 0}")
-            self.logger.debug(f"调试信息: config类型: {type(config)}, send_pic: {config.send_pic if config else None}")
-            self.logger.debug(f"调试信息: title类型: {type(title)}, 值: {title}")
-            self.logger.debug(f"调试信息: group_info类型: {type(group_info)}")
-            if hasattr(group_info, '__dict__'):
-                self.logger.debug(f"调试信息: group_info属性: {group_info.__dict__}")
-            # 检查group_info对象是否有Path属性
-            for attr_name in dir(group_info):
-                if not attr_name.startswith('_'):
-                    attr_value = getattr(group_info, attr_name)
-                    self.logger.debug(f"调试信息: group_info.{attr_name}类型: {type(attr_value)}")
-                    if hasattr(attr_value, 'startswith'):
-                        self.logger.debug(f"调试信息: 发现有startswith方法的属性: {attr_name} = {attr_value}")
             
             # 根据配置选择显示模式
             if config.send_pic:
-                self.logger.debug(f"调试信息: 进入图片渲染模式")
                 async for result in self._render_rank_as_image(event, filtered_data, group_info, title, current_user_id, config):
                     yield result
             else:
@@ -965,7 +946,6 @@ class MessageStatsPlugin(Star):
             if temp_path and await aiofiles.os.path.exists(temp_path):
                 try:
                     await aiofiles.os.unlink(temp_path)
-                    self.logger.debug(f"临时图片文件已清理: {temp_path}")
                 except OSError as e:
                     self.logger.warning(f"清理临时图片文件失败: {temp_path}, 错误: {e}")
     

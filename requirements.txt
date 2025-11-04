@@ -1,5 +1,5 @@
 # AstrBot插件核心依赖
-astrbot>=4.5.0
+# 注意：astrbot依赖由主项目提供，此处不重复声明
 
 # 安全依赖 - HTML清理和模板渲染
 bleach>=6.0.0

@@ -812,7 +812,6 @@ class DataManager:
             # 按时间段内的消息数降序排序
             user_count_pairs.sort(key=lambda x: x[1], reverse=True)
             
-            self.logger.debug(f"群组 {group_id} 在时间段 {period} 内找到 {len(user_count_pairs)} 个活跃用户")
             return user_count_pairs
             
         except ValueError as e:

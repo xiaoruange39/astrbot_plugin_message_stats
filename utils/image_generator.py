@@ -208,7 +208,7 @@ class ImageGenerator:
                     'hash': template_hash,
                     'template': self.jinja_env.from_string(content) if self.jinja_env else None
                 }
-            self.logger.debug("模板缓存已更新")
+
         except Exception as e:
             self.logger.error(f"更新模板缓存失败: {e}")
     
@@ -837,7 +837,6 @@ class ImageGenerator:
             # 尝试从缓存获取
             cached_template = await self._get_cached_template()
             if cached_template:
-                self.logger.debug("使用缓存的模板")
                 if isinstance(cached_template, str):
                     return cached_template
                 elif hasattr(cached_template, 'source'):
