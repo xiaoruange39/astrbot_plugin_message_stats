@@ -1,3 +1,5 @@
+[![访问量](https://count.getloli.com/@xiaoruange39?name=xiaoruange39&theme=gelbooru&padding=7&offset=0&align=top&scale=1&pixelated=1&darkmode=auto&prefix=0)](https://count.getloli.com/)
+
 # AstrBot 群发言统计插件
 
 > 🤖 **此插件由AI辅助生成**
