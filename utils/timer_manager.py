@@ -566,7 +566,14 @@ class TimerManager:
         
         # 限制数量
         limited_data = filtered_data[:config.rand]
-        users_for_rank = [user_data for user_data, _ in limited_data]
+        users_for_rank = []
+        
+        # 为用户数据设置display_total属性，确保图片生成器使用正确的数据
+        # 修复：图片版排行榜显示昨日数据的问题
+        for user_data, count in limited_data:
+            # 设置display_total属性（时间段内的发言数）
+            user_data.display_total = count
+            users_for_rank.append(user_data)
         
         # 创建群组信息
         group_info = GroupInfo(group_id=str(group_id))

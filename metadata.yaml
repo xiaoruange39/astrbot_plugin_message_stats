@@ -1,5 +1,5 @@
 name: "astrbot_plugin_message_stats"
 author: "xiaoruange39"
 description: "QQ群消息统计插件，支持消息数量统计和排行榜生成"
-version: "1.6.1"
+version: "1.6.2"
 repo: "https://github.com/xiaoruange39/astrbot_plugin_message_stats"

@@ -1217,7 +1217,14 @@ class MessageStatsPlugin(Star):
             # 提取用户数据用于图片生成，并应用人数限制
             # 先限制数量，再提取用户数据
             limited_data = filtered_data[:config.rand]
-            users_for_image = [user_data for user_data, _ in limited_data]
+            users_for_image = []
+            
+            # 为用户数据设置display_total属性，确保图片生成器使用正确的数据
+            # 修复：直接命令版排行榜图片显示错误数据的问题
+            for user_data, count in limited_data:
+                # 设置display_total属性（时间段内的发言数）
+                user_data.display_total = count
+                users_for_image.append(user_data)
             
             # 使用图片生成器
             temp_path = await self.image_generator.generate_rank_image(
