@@ -448,6 +448,7 @@ class TimerManager:
         except asyncio.CancelledError:
             self.logger.info(f"实例 #{self._instance_id} 定时任务被取消")
             TimerManager._global_is_executing = False
+            TimerManager._global_active_task_id = None
         except (OSError, IOError, RuntimeError, ValueError) as e:
             self.logger.error(f"实例 #{self._instance_id} 定时任务循环异常: {e}")
             self.status = TimerTaskStatus.ERROR
@@ -456,12 +457,20 @@ class TimerManager:
             retry_count = getattr(self, '_timer_retry_count', 0)
             if retry_count >= 3:
                 self.logger.critical(f"实例 #{self._instance_id} 定时任务已重试 {retry_count} 次仍失败，停止重试")
+                TimerManager._global_active_task_id = None
                 return
             self._timer_retry_count = retry_count + 1
             self.logger.info(f"实例 #{self._instance_id} 将在5分钟后重试 (第{self._timer_retry_count}次)")
             await asyncio.sleep(300)
             if not self._stop_event.is_set():
                 self.logger.info(f"实例 #{self._instance_id} 尝试重启定时任务")
+                # ❗ 修复：先取消旧任务再创建新任务，防止多个定时循环同时运行
+                if self.timer_task and not self.timer_task.done():
+                    self.timer_task.cancel()
+                    try:
+                        await self.timer_task
+                    except asyncio.CancelledError:
+                        pass
                 self.timer_task = asyncio.create_task(self._timer_loop(config))
         except Exception as e:
             # 捕获所有其他异常，防止任务静默退出
@@ -641,9 +650,16 @@ class TimerManager:
         # 定时推送前强制刷新昵称缓存，确保显示最新昵称
         await self._refresh_nickname_cache_for_timer_push(group_id, group_data)
         
-        # 如果启用了 LLM 头衔分析，先调用 LLM 生成头衔
+        # ========== 头衔处理：先清除旧头衔，再生成新头衔，最后保存到磁盘 ==========
         token_usage_info = None
         titles_map = None
+        
+        # 在 LLM 生成前先清除所有用户的旧头衔（避免旧头衔残留）
+        for user in group_data:
+            user.display_title = None
+            user.display_title_color = None
+        
+        # 如果启用了 LLM 头衔分析，调用 LLM 生成新头衔
         if config.llm_enabled:
             try:
                 # 使用 AstrBot 内部 Provider 系统调用 LLM
@@ -679,13 +695,14 @@ class TimerManager:
                                 user.display_title_color = info.get("color")
                             else:
                                 user.display_title = info
-
                 else:
                     self.logger.warning("⚠️ LLM 头衔生成结果为空，将使用不带头衔的排行榜")
             except Exception as e:
                 self.logger.error(f"❌ LLM 头衔生成异常: {e}", exc_info=True)
                 self.logger.info("将使用不带头衔的排行榜继续推送")
-
+        
+        # ✅ 将更新后的头衔（包括清除的旧头衔）持久化保存到磁盘
+        await self.data_manager.save_group_data(group_id, group_data)
         
         # 根据排行榜类型筛选数据
         # 定时推送强制使用今日排行榜
