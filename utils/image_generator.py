@@ -1,1634 +1,1618 @@
-"""
-鍥剧墖鐢熸垚妯″潡
-璐熻矗灏咹TML妯℃澘杞崲涓烘帓琛屾鍥剧墖
-"""
-
-import asyncio
-import aiofiles
-from pathlib import Path
-from typing import List, Optional, Dict, Any, Union
-from datetime import datetime
-import tempfile
-import os
-import traceback
-import hashlib
-import json
-import uuid
-
-from astrbot.api import logger as astrbot_logger
-
-# 浠庨泦涓鐞嗙殑甯搁噺妯″潡瀵煎叆鍥剧墖鐢熸垚閰嶇疆
-from .constants import (
-    IMAGE_WIDTH,
-    VIEWPORT_HEIGHT,
-    BROWSER_TIMEOUT,
-    DEFAULT_FONT_SIZE,
-    ROW_HEIGHT
-)
-
-# Jinja2妯℃澘寮曟搸
-try:
-    from jinja2 import Template, Environment, select_autoescape, FileSystemLoader
-    import html  # 鐢ㄤ簬HTML杞箟瀹夊叏闃叉姢
-    JINJA2_AVAILABLE = True
-except ImportError:
-    JINJA2_AVAILABLE = False
-    astrbot_logger.warning("Jinja2鏈畨瑁咃紝灏嗕娇鐢ㄤ笉瀹夊叏鐨勫瓧绗︿覆鎷兼帴鏂瑰紡")
-
-try:
-    from playwright.async_api import async_playwright, Browser, Page
-    PLAYWRIGHT_AVAILABLE = True
-except ImportError:
-    PLAYWRIGHT_AVAILABLE = False
-    astrbot_logger.warning("Playwright鏈畨瑁咃紝鍥剧墖鐢熸垚鍔熻兘灏嗕笉鍙敤")
-
-from .models import UserData, GroupInfo, PluginConfig
-from .exception_handlers import safe_generation, safe_file_operation
-
-
-
-
-class ImageGenerationError(Exception):
-    """鍥剧墖鐢熸垚寮傚父
-    
-    褰撳浘鐗囩敓鎴愯繃绋嬩腑鍙戠敓閿欒鏃舵姏鍑虹殑鑷畾涔夊紓甯搞€?    
-    Attributes:
-        message (str): 寮傚父娑堟伅锛屾弿杩板叿浣撶殑閿欒鍘熷洜
-        
-    Example:
-        >>> raise ImageGenerationError("Playwright鏈畨瑁咃紝鏃犳硶鐢熸垚鍥剧墖")
-    """
-    pass
-
-
-class ImageGenerator:
-    """鍥剧墖鐢熸垚鍣?    
-    璐熻矗灏咹TML妯℃澘杞崲涓烘帓琛屾鍥剧墖銆傛敮鎸丳laywright娴忚鍣ㄨ嚜鍔ㄥ寲鍜孞inja2妯℃澘娓叉煋銆?    
-    涓昏鍔熻兘:
-        - 浣跨敤Playwright娴忚鍣ㄧ敓鎴愰珮璐ㄩ噺鎺掕姒滃浘鐗?        - 鏀寔Jinja2妯℃澘寮曟搸杩涜瀹夊叏鐨凥TML娓叉煋
-        - 鑷姩璋冩暣椤甸潰楂樺害鍜屾埅鍥惧昂瀵?        - 鍖呭惈澶氬眰鍥為€€鏈哄埗锛岀‘淇濆湪鍚勭鐜涓嬮兘鑳芥甯稿伐浣?        - 鏀寔褰撳墠鐢ㄦ埛楂樹寒鏄剧ず
-        - 鎻愪緵榛樿妯℃澘浣滀负澶囩敤鏂规
-        - 妯℃澘缂撳瓨鏈哄埗锛屾彁楂橀噸澶嶆覆鏌撴晥鐜?        
-    Attributes:
-        config (PluginConfig): 鎻掍欢閰嶇疆瀵硅薄锛屽寘鍚敓鎴愬弬鏁?        browser (Optional[Browser]): Playwright娴忚鍣ㄥ疄渚?        page (Optional[Page]): Playwright椤甸潰瀹炰緥
-        playwright: Playwright瀹炰緥
-        logger: 鏃ュ織璁板綍鍣?        width (int): 鍥剧墖瀹藉害锛岄粯璁?200鍍忕礌
-        timeout (int): 椤甸潰鍔犺浇瓒呮椂鏃堕棿锛岄粯璁?0绉?        viewport_height (int): 瑙嗗彛楂樺害锛岄粯璁?鍍忕礌
-        template_path (Path): HTML妯℃澘鏂囦欢璺緞
-        jinja_env (Optional[Environment]): Jinja2鐜瀵硅薄
-        _template_cache (Dict): 妯℃澘缂撳瓨瀛楀吀
-        _cache_lock (Lock): 缂撳瓨閿侊紝纭繚绾跨▼瀹夊叏
-        
-    Example:
-        >>> generator = ImageGenerator(config)
-        >>> await generator.initialize()
-        >>> image_path = await generator.generate_rank_image(users, group_info, "鎺掕姒?)
-    """
-    
-    def __init__(self, config: PluginConfig, context=None):
-        """鍒濆鍖栧浘鐗囩敓鎴愬櫒
-        
-        Args:
-            config (PluginConfig): 鎻掍欢閰嶇疆瀵硅薄锛屽寘鍚敓鎴愬弬鏁板拰璁剧疆
-            context: AstrBot涓婁笅鏂囧璞★紝鐢ㄤ簬API璋冪敤鑾峰彇澶村儚
-        """
-        self.config = config
-        self.context = context
-        self.browser: Optional[Browser] = None
-        self.page: Optional[Page] = None
-        self.playwright = None
-        self.logger = astrbot_logger
-        
-        # 鍥剧墖鐢熸垚閰嶇疆
-        self.width = IMAGE_WIDTH
-        self.timeout = BROWSER_TIMEOUT
-        self.viewport_height = VIEWPORT_HEIGHT
-        
-        # 妯℃澘璺緞 - 鏍规嵁涓婚閫夋嫨
-        self._templates_dir = Path(__file__).parent.parent / "templates"
-        self._update_template_path()
-        
-        # 妯℃澘缂撳瓨鏈哄埗
-        self._template_cache: Dict[str, Any] = {}
-        self._cache_lock = asyncio.Lock()
-        self._cache_hits = 0
-        self._cache_misses = 0
-        
-        # 骞跺彂鎺у埗锛氭祻瑙堝櫒鐨勭敓鍛藉懆鏈熺鐞?        self._browser_lock = asyncio.Lock()
-        self._active_tasks = 0
-        
-        # Jinja2鐜灏嗗湪initialize鏂规硶涓垵濮嬪寲
-        self.jinja_env = None
-        
-        # 褰撳墠骞冲彴绫诲瀷锛岀敱澶栭儴鍦ㄧ敓鎴愬浘鐗囧墠璁剧疆
-        # 渚嬪: "qq", "telegram", "discord" 绛?        self.platform = ""
-    
-    def _update_template_path(self):
-        """鏍规嵁涓婚閰嶇疆鏇存柊妯℃澘璺緞锛堟敮鎸佽嚜鍔ㄦ牴鎹椂闂村垏鎹富棰橈級"""
-        theme = getattr(self.config, 'theme', 'default')
-        auto_switch = getattr(self.config, 'auto_theme_switch', False)
-        
-        if auto_switch:
-            # 鑷姩鏍规嵁鏃堕棿鍒囨崲涓婚
-            theme = self._get_auto_theme(theme)
-            self.logger.info(f"鑷姩涓婚鍒囨崲宸插惎鐢紝褰撳墠鏃堕棿鍖归厤涓婚: {theme}")
-        
-        template_map = {
-            'default': 'rank_template.html',
-            'liquid_glass': 'rank_template_liquid_glass.html',
-            'liquid_glass_dark': 'rank_template_liquid_glass_dark.html',
-        }
-        template_file = template_map.get(theme, 'rank_template.html')
-        self.template_path = self._templates_dir / template_file
-        self.logger.info(f"浣跨敤鎺掕姒滀富棰? {theme}, 妯℃澘: {template_file}")
-    
-    def _get_auto_theme(self, base_theme: str) -> str:
-        """鏍规嵁褰撳墠鏃堕棿鑷姩閫夋嫨鍚堥€傜殑涓婚
-        
-        鏍规嵁 auto_theme_switch 閰嶇疆涓殑 light/dark 鍒囨崲鏃堕棿锛?        鍒ゆ柇褰撳墠搴旇浣跨敤娴呰壊涓婚杩樻槸娣辫壊涓婚銆?        娴呰壊鏃舵浣跨敤鐢ㄦ埛閰嶇疆鐨勪富棰橈紙濡?liquid_glass锛夛紝
-        娣辫壊鏃舵鍥哄畾浣跨敤 liquid_glass_dark銆?        
-        Args:
-            base_theme: 鐢ㄦ埛閰嶇疆鐨勬祬鑹蹭富棰樺悕绉?            
-        Returns:
-            str: 涓婚鍚嶇О锛屾祬鑹叉椂娈佃繑鍥?base_theme锛屾繁鑹叉椂娈佃繑鍥?'liquid_glass_dark'
-        """
-        try:
-            switch_times = getattr(self.config, 'theme_switch_times', {"light": "06:00", "dark": "18:00"})
-            now = datetime.now()
-            current_minutes = now.hour * 60 + now.minute
-            
-            # 瑙ｆ瀽娴呰壊涓婚寮€濮嬫椂闂?            light_time_str = switch_times.get("light", "06:00")
-            light_h, light_m = map(int, light_time_str.split(':'))
-            light_minutes = light_h * 60 + light_m
-            
-            # 瑙ｆ瀽娣辫壊涓婚寮€濮嬫椂闂?            dark_time_str = switch_times.get("dark", "18:00")
-            dark_h, dark_m = map(int, dark_time_str.split(':'))
-            dark_minutes = dark_h * 60 + dark_m
-            
-            # 鍒ゆ柇褰撳墠鏃堕棿娈?            if light_minutes <= current_minutes < dark_minutes:
-                # 娴呰壊鏃堕棿娈碉細浣跨敤鐢ㄦ埛閰嶇疆鐨勬祬鑹蹭富棰?                return base_theme
-            else:
-                # 娣辫壊鏃堕棿娈碉細浣跨敤娑叉€佺幓鐠冩繁鑹蹭富棰?                return 'liquid_glass_dark'
-        except (ValueError, AttributeError, KeyError, TypeError) as e:
-            self.logger.warning(f"鑷姩涓婚鍒囨崲鏃堕棿瑙ｆ瀽澶辫触锛屼娇鐢ㄩ粯璁や富棰? {e}")
-            return base_theme
-    
-
-    
-    async def _init_jinja2_env(self):
-        """鍒濆鍖朖inja2鐜
-        
-        鍒涘缓Jinja2妯℃澘鐜锛屽惎鐢ㄨ嚜鍔ㄨ浆涔変互闃叉XSS鏀诲嚮銆?        濡傛灉Jinja2涓嶅彲鐢紝灏嗕娇鐢ㄤ笉瀹夊叏鐨勫瓧绗︿覆鎷兼帴鏂瑰紡浣滀负澶囩敤銆?        娣诲姞妯℃澘缂撳瓨鏈哄埗浠ユ彁楂樻€ц兘銆?        
-        Returns:
-            None: 鏃犺繑鍥炲€硷紝鍒濆鍖栫粨鏋滈€氳繃鏃ュ織杈撳嚭
-            
-        Example:
-            >>> await self._init_jinja2_env()
-            # 灏嗗垵濮嬪寲Jinja2鐜鎴栬褰曡鍛婁俊鎭?        """
-        if JINJA2_AVAILABLE:
-            try:
-                # 鍒涘缓Jinja2鐜锛屽惎鐢ㄨ嚜鍔ㄨ浆涔夊拰缂撳瓨锛屼絾涓嶅惎鐢ㄥ紓姝?                self.jinja_env = Environment(
-                    autoescape=select_autoescape(['html', 'xml']),
-                    trim_blocks=True,
-                    lstrip_blocks=True,
-                    cache_size=400  # 鍚敤妯℃澘缂撳瓨锛屼絾涓嶅惎鐢ㄥ紓姝?                )
-                
-                # 棰勫姞杞芥ā鏉挎枃浠?                await self._preload_templates()
-                
-                self.logger.info("Jinja2鐜鍒濆鍖栨垚鍔燂紝妯℃澘缂撳瓨宸插惎鐢?)
-            except Exception as e:
-                self.logger.error(f"Jinja2鐜鍒濆鍖栧け璐? {e}")
-                self.jinja_env = None
-        else:
-            self.jinja_env = None
-            self.logger.warning("Jinja2涓嶅彲鐢紝灏嗕娇鐢ㄤ笉瀹夊叏鐨勫瓧绗︿覆鎷兼帴")
-    
-    async def _preload_templates(self):
-        """棰勫姞杞芥ā鏉挎枃浠跺埌缂撳瓨"""
-        try:
-            if await aiofiles.os.path.exists(self.template_path):
-                # 浣跨敤寮傛鏂囦欢璇诲彇浼樺寲
-                async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
-                    template_content = await f.read()
-                
-                # 缂撳瓨妯℃澘鍐呭
-                template_hash = self._get_template_hash(template_content)
-                async with self._cache_lock:
-                    self._template_cache['main_template'] = {
-                        'content': template_content,
-                        'hash': template_hash,
-                        'template': self.jinja_env.from_string(template_content) if self.jinja_env else None
-                    }
-                
-                self.logger.info(f"妯℃澘棰勫姞杞藉畬鎴愶紝缂撳瓨閿? main_template")
-            else:
-                self.logger.warning(f"妯℃澘鏂囦欢涓嶅瓨鍦? {self.template_path}")
-        except Exception as e:
-            self.logger.error(f"妯℃澘棰勫姞杞藉け璐? {e}")
-    
-    def _get_template_hash(self, content: str) -> str:
-        """鑾峰彇妯℃澘鍐呭鐨勫搱甯屽€硷紝鐢ㄤ簬缂撳瓨楠岃瘉"""
-        return hashlib.md5(content.encode('utf-8')).hexdigest()
-    
-    async def _get_cached_template(self) -> Optional[Union[str, Template]]:
-        """鑾峰彇缂撳瓨鐨勬ā鏉?""
-        async with self._cache_lock:
-            cached = self._template_cache.get('main_template')
-            if cached:
-                self._cache_hits += 1
-                return cached.get('template') if self.jinja_env else cached.get('content')
-            else:
-                self._cache_misses += 1
-                return None
-    
-    async def _update_template_cache(self, content: str):
-        """鏇存柊妯℃澘缂撳瓨"""
-        try:
-            template_hash = self._get_template_hash(content)
-            async with self._cache_lock:
-                self._template_cache['main_template'] = {
-                    'content': content,
-                    'hash': template_hash,
-                    'template': self.jinja_env.from_string(content) if self.jinja_env else None
-                }
-
-        except Exception as e:
-            self.logger.error(f"鏇存柊妯℃澘缂撳瓨澶辫触: {e}")
-    
-    async def get_cache_stats(self) -> Dict[str, int]:
-        """鑾峰彇缂撳瓨缁熻淇℃伅"""
-        async with self._cache_lock:
-            return {
-                'hits': self._cache_hits,
-                'misses': self._cache_misses,
-                'total_requests': self._cache_hits + self._cache_misses,
-                'hit_rate': self._cache_hits / max(1, self._cache_hits + self._cache_misses)
-            }
-    
-    @safe_generation(default_return=None)
-    async def initialize(self):
-        """鍒濆鍖栧浘鐗囩敓鎴愬櫒锛堣交閲忓垵濮嬪寲锛?        
-        鍙垵濮嬪寲Jinja2妯℃澘鐜锛屼笉鍚姩娴忚鍣ㄣ€?        娴忚鍣ㄥ皢鍦ㄩ娆＄敓鎴愬浘鐗囨椂鎸夐渶鍚姩锛堟噿鍔犺浇锛夈€?        
-        Raises:
-            ImageGenerationError: 褰揚laywright鏈畨瑁呮椂鎶涘嚭
-            
-        Returns:
-            None: 鏃犺繑鍥炲€?        """
-        if not PLAYWRIGHT_AVAILABLE:
-            self.logger.error("Playwright鏈畨瑁咃紝鍥剧墖鐢熸垚鍔熻兘灏嗕笉鍙敤")
-            raise ImageGenerationError("Playwright鏈畨瑁咃紝鏃犳硶鐢熸垚鍥剧墖")
-        
-        try:
-            self.logger.info("寮€濮嬪垵濮嬪寲鍥剧墖鐢熸垚鍣紙杞婚噺妯″紡锛?..")
-            
-            # 鍙垵濮嬪寲Jinja2鐜锛屾祻瑙堝櫒鎸夐渶鍚姩
-            await self._init_jinja2_env()
-            
-            self.logger.info("鍥剧墖鐢熸垚鍣ㄥ垵濮嬪寲瀹屾垚锛堟祻瑙堝櫒鏈惎鍔紝灏嗗湪棣栨鐢熸垚鍥剧墖鏃舵寜闇€鍚姩锛?)
-        except FileNotFoundError as e:
-            self.logger.error(f"妯℃澘鏂囦欢鏈壘鍒? {e}")
-            raise ImageGenerationError(f"妯℃澘鏂囦欢鏈壘鍒? {e}")
-        except PermissionError as e:
-            self.logger.error(f"鏉冮檺閿欒: {e}")
-            raise ImageGenerationError(f"鏉冮檺涓嶈冻: {e}")
-        except OSError as e:
-            self.logger.error(f"鍒濆鍖栧浘鐗囩敓鎴愬櫒澶辫触: {e}")
-            self.logger.error(f"璇︾粏閿欒: {traceback.format_exc()}")
-            raise ImageGenerationError(f"鍒濆鍖栧け璐? {e}")
-    
-    async def _ensure_browser(self):
-        """纭繚娴忚鍣ㄥ凡鍚姩锛堟噿鍔犺浇锛夊苟澧炲姞浠诲姟璁℃暟
-        
-        浣跨敤寮傛閿侀槻姝㈠苟鍙戝惎鍔ㄣ€傚鏋滄槸绗竴涓换鍔″垯鍚姩娴忚鍣紝
-        鐒跺悗澧炲姞娲昏穬浠诲姟璁℃暟鍣ㄣ€?        """
-        async with self._browser_lock:
-            self._active_tasks += 1
-            if self.browser:
-                return
-            
-            self.logger.info("鎸夐渶鍚姩娴忚鍣?..")
-            try:
-                self.playwright = await async_playwright().start()
-                self.browser = await self.playwright.chromium.launch(
-                    headless=True,
-                    args=[
-                        "--no-sandbox",
-                        "--disable-setuid-sandbox",
-                        "--disable-dev-shm-usage",
-                        "--disable-gpu",
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                        "--disable-extensions"
-                    ]
-                )
-                self.logger.info("Chromium娴忚鍣ㄥ惎鍔ㄦ垚鍔?)
-            except Exception as e:
-                self._active_tasks -= 1
-                self.logger.error(f"鍚姩娴忚鍣ㄥけ璐? {e}")
-                raise ImageGenerationError(f"鍚姩娴忚鍣ㄥけ璐? {e}")
-    
-    async def _close_browser(self):
-        """浠诲姟瀹屾垚锛屽噺灏戜换鍔¤鏁帮紝濡傛灉璁℃暟涓?鍒欏叧闂祻瑙堝櫒閲婃斁鍐呭瓨"""
-        async with self._browser_lock:
-            self._active_tasks = max(0, self._active_tasks - 1)
-            
-            if self._active_tasks > 0:
-                # 杩樻湁鍏朵粬浠诲姟鍦ㄤ娇鐢ㄦ祻瑙堝櫒锛屼笉鍏抽棴
-                return
-                
-            try:
-                # 涓嶅啀鍦ㄦ澶勫叧闂璼elf.page锛屽洜涓洪〉闈㈠凡鍙樹负灞€閮ㄥ彉閲忥紝鐢卞悇鑷殑浠诲姟鑷鍏抽棴
-                if self.browser:
-                    await self.browser.close()
-                    self.browser = None
-                if self.playwright:
-                    await self.playwright.stop()
-                    self.playwright = None
-                self.logger.info("鎵€鏈夋覆鏌撲换鍔″畬鎴愶紝娴忚鍣ㄥ凡鍏抽棴骞堕噴鏀惧唴瀛?)
-            except Exception as e:
-                self.logger.warning(f"鍏抽棴娴忚鍣ㄦ椂鍙戠敓閿欒: {e}")
-            finally:
-                self.browser = None
-                self.playwright = None
-    
-    async def cleanup(self):
-        """娓呯悊璧勬簮
-        
-        寮傛娓呯悊鍥剧墖鐢熸垚鍣ㄧ殑鎵€鏈夎祫婧愶紝鍖呮嫭娴忚鍣ㄥ疄渚嬨€侀〉闈㈠拰Playwright瀵硅薄銆?        纭繚璧勬簮姝ｇ‘閲婃斁锛岄伩鍏嶅唴瀛樻硠婕忋€?        
-        Raises:
-            Exception: 褰撴竻鐞嗚繃绋嬩腑鍙戠敓閿欒鏃舵姏鍑?            
-        Returns:
-            None: 鏃犺繑鍥炲€硷紝娓呯悊瀹屾垚鍚庢墍鏈夎祫婧愬皢琚噴鏀?            
-        Example:
-            >>> await generator.cleanup()
-            >>> print(generator.browser is None)
-            True
-        """
-        try:
-            if self.page:
-                await self.page.close()
-                self.page = None
-            
-            if self.browser:
-                await self.browser.close()
-                self.browser = None
-            
-            if self.playwright:
-                await self.playwright.stop()
-                self.playwright = None
-            
-            self.logger.info("鍥剧墖鐢熸垚鍣ㄨ祫婧愬凡娓呯悊")
-        
-        except ConnectionError as e:
-            self.logger.error(f"娴忚鍣ㄨ繛鎺ラ敊璇? {e}")
-        except Exception as e:
-            self.logger.error(f"娓呯悊鍥剧墖鐢熸垚鍣ㄨ祫婧愬け璐? {e}")
-    
-    @safe_generation(default_return=None)
-    async def generate_rank_image(self, 
-                                 users: List[UserData], 
-                                 group_info: GroupInfo, 
-                                 title: str,
-                                 current_user_id: Optional[str] = None,
-                                 llm_token_usage: Dict[str, int] = None,
-                                 titles_map: Optional[Dict[str, str]] = None) -> str:
-        """鐢熸垚鎺掕姒滃浘鐗囷紙鎳掑姞杞芥祻瑙堝櫒锛岀敤瀹屽嵆鍏筹級
-        
-        Args:
-            users: 鐢ㄦ埛鏁版嵁鍒楄〃锛堝凡鎸夊彂瑷€鏁伴檷搴忔帓鍒楋級
-            group_info: 缇ょ粍淇℃伅
-            title: 鎺掕姒滄爣棰?            current_user_id: 褰撳墠鐢ㄦ埛ID锛岀敤浜庨珮浜樉绀?            llm_token_usage: LLM token浣跨敤缁熻
-            titles_map: 鐢ㄦ埛ID鍒板ご琛旂殑鏄犲皠瀛楀吀 {user_id: title}
-            
-        Returns:
-            str: 鐢熸垚鐨勪复鏃跺浘鐗囪矾寰?            
-        Raises:
-            ImageGenerationError: 鍥剧墖鐢熸垚澶辫触鏃舵姏鍑?        """
-        # 姣忔鐢熸垚鍥剧墖鏃堕噸鏂版鏌ヤ富棰橈紙鏀寔鑷姩涓婚鍒囨崲瀹炴椂鐢熸晥锛?        self._update_template_path()
-        
-        # 鎸夐渶鍚姩娴忚鍣?        await self._ensure_browser()
-        
-        temp_path = None
-        page = None
-        success = False
-        
-        try:
-            # 鍒涘缓灞€閮ㄩ〉闈㈠彉閲忥紝闃叉骞跺彂鏃朵簰鐩歌鐩栵紙寮€鍚袱鍊嶉珮娓呮覆鏌擄級
-            page = await self.browser.new_page(device_scale_factor=2)
-            
-            # 璁剧疆瑙嗗彛
-            await page.set_viewport_size({"width": self.width, "height": self.viewport_height})
-            
-            # 鐢熸垚HTML鍐呭锛堟樉寮忎紶鍏ュご琛旀槧灏勶級
-            html_content = await self._generate_html(users, group_info, title, current_user_id, llm_token_usage, titles_map)
-            
-            # 璁剧疆椤甸潰鍐呭锛堜娇鐢?load 鑰岄潪 networkidle锛岄伩鍏嶅閮ㄨ祫婧愬姞杞借秴鏃讹級
-            await page.set_content(html_content, wait_until="load")
-            
-            # 绛夊緟椤甸潰鍔犺浇瀹屾垚
-            await page.wait_for_timeout(2000)
-            
-            # 鍔ㄦ€佽皟鏁撮〉闈㈤珮搴?            body_height = await page.evaluate("document.body.scrollHeight")
-            await page.set_viewport_size({"width": self.width, "height": body_height})
-            
-            # 鐢熸垚涓存椂鏂囦欢璺緞锛堝紓姝ユ柟寮忥級
-            temp_filename = f"rank_image_{uuid.uuid4().hex}.png"
-            temp_path = Path(tempfile.gettempdir()) / temp_filename
-            
-            # 鎴浘
-            await page.screenshot(path=temp_path, full_page=True)
-            
-            success = True
-            return str(temp_path)
-
-        
-        except FileNotFoundError as e:
-            self.logger.error(f"涓存椂鏂囦欢鎴栬祫婧愭湭鎵惧埌: {e}")
-            raise ImageGenerationError(f"鏂囦欢璧勬簮鏈壘鍒? {e}")
-        except PermissionError as e:
-            self.logger.error(f"鏉冮檺閿欒: {e}")
-            raise ImageGenerationError(f"鏉冮檺涓嶈冻: {e}")
-        except TimeoutError as e:
-            self.logger.error(f"娴忚鍣ㄦ搷浣滆秴鏃? {e}")
-            raise ImageGenerationError(f"鎿嶄綔瓒呮椂: {e}")
-        except RuntimeError as e:
-            # 鎹曡幏娴忚鍣ㄨ繍琛屾椂閿欒锛屽椤甸潰娓叉煋澶辫触銆丣avaScript鎵ц閿欒绛?            self.logger.error(f"鐢熸垚鎺掕姒滃浘鐗囧け璐? {e}")
-            self.logger.error(f"璇︾粏閿欒: {traceback.format_exc()}")
-            raise ImageGenerationError(f"鐢熸垚鍥剧墖澶辫触: {e}")
-        
-        finally:
-            # 娓呯悊璧勬簮
-            if page:
-                try:
-                    await page.close()
-                except Exception as e:
-                    self.logger.warning(f"鍏抽棴椤甸潰鏃跺彂鐢熼敊璇? {e}")
-            
-            # 鐢熸垚瀹屾瘯鍚庡叧闂祻瑙堝櫒閲婃斁鍐呭瓨
-            await self._close_browser()
-            
-            # 娓呯悊涓存椂鏂囦欢锛氬鏋滅敓鎴愬け璐ワ紝鍒犻櫎宸插垱寤虹殑涓存椂鏂囦欢閬垮厤绉疮
-            if not success and temp_path and temp_path.exists():
-                try:
-                    await aiofiles.os.unlink(str(temp_path))
-                    self.logger.debug(f"宸叉竻鐞嗗け璐ョ殑涓存椂鏂囦欢: {temp_path}")
-                except Exception as e:
-                    self.logger.warning(f"娓呯悊涓存椂鏂囦欢澶辫触: {e}")
-    
-    @safe_generation(default_return=None)
-    async def generate_milestone_image(self,
-                                       user_id: str,
-                                       nickname: str,
-                                       milestone_count: int,
-                                       rank: int,
-                                       daily_count: int,
-                                       active_days: int,
-                                       last_date: str,
-                                       group_total_messages: int,
-                                       percentage: float,
-                                       group_info: GroupInfo) -> str:
-        """鐢熸垚閲岀▼纰戜釜浜烘垚灏卞崱鐗囧浘鐗?        
-        鐢熸垚涓€寮犵簿缇庣殑涓汉鎴愬氨鍗＄墖锛屾浛浠ｉ噷绋嬬瑙﹀彂鏃跺彂閫佹暣涓帓琛屾銆?        
-        Args:
-            user_id: 鐢ㄦ埛ID
-            nickname: 鐢ㄦ埛鏄电О
-            milestone_count: 閲岀▼纰戝彂瑷€娆℃暟
-            rank: 缇ゅ唴鎺掑悕
-            daily_count: 浠婃棩鍙戣█鏁?            active_days: 娲昏穬澶╂暟
-            last_date: 鏈€鍚庡彂瑷€鏃ユ湡
-            group_total_messages: 缇ゆ€诲彂瑷€鏁?            percentage: 鍙戣█鍗犳瘮
-            group_info: 缇ょ粍淇℃伅
-            
-        Returns:
-            str: 鐢熸垚鐨勫浘鐗囪矾寰勶紝澶辫触鏃惰繑鍥濶one
-        """
-        # 鎸夐渶鍚姩娴忚鍣?        await self._ensure_browser()
-        
-        page = None
-        temp_path = None
-        success = False
-        try:
-            # 鍒涘缓灞€閮ㄩ〉闈㈠彉閲忥紙閲岀▼纰戝崱鐗囦娇鐢ㄨ緝绐勭殑瑙嗗彛锛屽紑鍚袱鍊嶉珮娓呮覆鏌擄級
-            page = await self.browser.new_page(device_scale_factor=2)
-            milestone_width = 600
-            await page.set_viewport_size({"width": milestone_width, "height": self.viewport_height})
-            
-            # 鍔犺浇閲岀▼纰戞ā鏉?            milestone_template_path = self._templates_dir / "milestone_template.html"
-            template_content = ""
-            if await aiofiles.os.path.exists(milestone_template_path):
-                async with aiofiles.open(milestone_template_path, 'r', encoding='utf-8') as f:
-                    template_content = await f.read()
-            else:
-                self.logger.warning(f"閲岀▼纰戞ā鏉挎枃浠朵笉瀛樺湪: {milestone_template_path}")
-                return None
-            
-            # 鑾峰彇璇█璁剧疆
-            lang = getattr(self.config, 'image_language', 'zh-CN')
-            ms_texts = {
-                'zh-CN': {'title': '鍙戣█閲岀▼纰?, 'brand': '缇よ亰鎴愬氨', 'hint1': 'Total number', 'hint2': 'of messages', 'milestone': '鎬诲彂瑷€鐮?, 'rank': '缇ゅ唴鎺掑悕', 'defeated': '鍑昏触浜嗙兢鍐?, 'defeated2': '鐨勬椿璺冪兢鍙?},
-                'en-US': {'title': 'Message Milestone', 'brand': 'Group Achievement', 'hint1': 'Total number', 'hint2': 'of messages', 'milestone': 'Messages:', 'rank': 'Group rank', 'defeated': 'Beat', 'defeated2': 'of active members'},
-                'ru-RU': {'title': '袙械褏邪 褋芯芯斜褖械薪懈泄', 'brand': '袛芯褋褌懈卸械薪懈械', 'hint1': '袙褋械谐芯', 'hint2': '褋芯芯斜褖械薪懈泄', 'milestone': '小芯芯斜褖械薪懈泄', 'rank': '袪邪薪谐', 'defeated': '袨锌械褉械写懈谢', 'defeated2': '邪泻褌懈胁薪褘褏 褍褔邪褋褌薪懈泻芯胁'}
-            }
-            ms = ms_texts.get(lang, ms_texts['zh-CN'])
-            
-            avatar_url = self._get_avatar_url(user_id)
-            group_name = group_info.group_name or f"缇group_info.group_id}"
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
-            template_data = {
-                'avatar_url': avatar_url,
-                'nickname': self._escape_html_safe(nickname),
-                'user_id': self._escape_html_safe(str(user_id)),
-                'group_name': self._escape_html_safe(f"{group_name}[{group_info.group_id}]"),
-                'milestone_count': milestone_count,
-                'rank': rank,
-                'daily_count': daily_count,
-                'active_days': active_days,
-                'last_date': self._escape_html_safe(last_date or "鏈煡"),
-                'group_total_messages': group_total_messages,
-                'percentage': f"{percentage:.2f}",
-                'current_time': current_time,
-                'title_text': self._escape_html_safe(ms['title']),
-                'milestone_brand': self._escape_html_safe(ms['brand']),
-                'ms_hint_line1': self._escape_html_safe(ms['hint1']),
-                'ms_hint_line2': self._escape_html_safe(ms['hint2']),
-                'ms_milestone_label': self._escape_html_safe(ms['milestone']),
-                'ms_rank_prefix': self._escape_html_safe(ms['rank']),
-                'ms_defeated_prefix': self._escape_html_safe(ms['defeated']),
-                'ms_defeated_suffix': self._escape_html_safe(ms['defeated2'])
-            }
-            
-            # 娓叉煋妯℃澘
-            if JINJA2_AVAILABLE and self.jinja_env:
-                template = self.jinja_env.from_string(template_content)
-                html_content = template.render(**template_data)
-            else:
-                # 鍥為€€锛氱畝鍗曞崰浣嶇鏇挎崲
-                html_content = template_content
-                for key, value in template_data.items():
-                    html_content = html_content.replace('{{ ' + key + ' }}', str(value))
-                    html_content = html_content.replace('{{' + key + '}}', str(value))
-            
-            # 璁剧疆椤甸潰鍐呭
-            await page.set_content(html_content, wait_until="load")
-            await page.wait_for_timeout(2000)
-            
-            # 鍔ㄦ€佽皟鏁撮〉闈㈤珮搴?            body_height = await page.evaluate("document.body.scrollHeight")
-            await page.set_viewport_size({"width": milestone_width, "height": body_height})
-            
-            # 鐢熸垚涓存椂鏂囦欢
-            temp_filename = f"milestone_{uuid.uuid4().hex}.png"
-            temp_path = Path(tempfile.gettempdir()) / temp_filename
-            
-            # 鎴浘
-            await page.screenshot(path=temp_path, full_page=True)
-            
-            success = True
-            return str(temp_path)
-        
-        except FileNotFoundError as e:
-            self.logger.error(f"閲岀▼纰戞ā鏉挎枃浠舵湭鎵惧埌: {e}")
-            raise ImageGenerationError(f"鏂囦欢璧勬簮鏈壘鍒? {e}")
-        except PermissionError as e:
-            self.logger.error(f"鏉冮檺閿欒: {e}")
-            raise ImageGenerationError(f"鏉冮檺涓嶈冻: {e}")
-        except TimeoutError as e:
-            self.logger.error(f"娴忚鍣ㄦ搷浣滆秴鏃? {e}")
-            raise ImageGenerationError(f"鎿嶄綔瓒呮椂: {e}")
-        except RuntimeError as e:
-            self.logger.error(f"鐢熸垚閲岀▼纰戝崱鐗囧け璐? {e}")
-            self.logger.error(f"璇︾粏閿欒: {traceback.format_exc()}")
-            raise ImageGenerationError(f"鐢熸垚鍥剧墖澶辫触: {e}")
-        
-        finally:
-            if page:
-                try:
-                    await page.close()
-                except Exception as e:
-                    self.logger.warning(f"鍏抽棴椤甸潰鏃跺彂鐢熼敊璇? {e}")
-            
-            # 鐢熸垚瀹屾瘯鍚庡叧闂祻瑙堝櫒閲婃斁鍐呭瓨
-            await self._close_browser()
-            
-            # 娓呯悊涓存椂鏂囦欢锛氬鏋滅敓鎴愬け璐ワ紝鍒犻櫎宸插垱寤虹殑涓存椂鏂囦欢閬垮厤绉疮
-            if not success and temp_path and temp_path.exists():
-                try:
-                    await aiofiles.os.unlink(str(temp_path))
-                    self.logger.debug(f"宸叉竻鐞嗗け璐ョ殑閲岀▼纰戜复鏃舵枃浠? {temp_path}")
-                except Exception as e:
-                    self.logger.warning(f"娓呯悊閲岀▼纰戜复鏃舵枃浠跺け璐? {e}")
-    
-    @safe_generation(default_return="")
-    async def _generate_html(self, 
-                      users: List[UserData], 
-                      group_info: GroupInfo, 
-                      title: str,
-                      current_user_id: Optional[str] = None,
-                      llm_token_usage: Dict[str, int] = None,
-                      titles_map: Optional[Dict[str, str]] = None) -> str:
-        """鐢熸垚HTML鍐呭
-        
-        Args:
-            users: 鐢ㄦ埛鏁版嵁鍒楄〃
-            group_info: 缇ょ粍淇℃伅
-            title: 鎺掕姒滄爣棰?            current_user_id: 褰撳墠鐢ㄦ埛ID锛岀敤浜庨珮浜樉绀?            llm_token_usage: LLM token浣跨敤缁熻
-            titles_map: 鐢ㄦ埛ID鍒板ご琛旂殑鏄犲皠瀛楀吀 {user_id: title}
-        """
-        if not users:
-            return await self._generate_empty_html(group_info, title)
-        
-        # 浣跨敤鎵归噺澶勭悊浼樺寲鎬ц兘锛堟樉寮忎紶鍏ュご琛旀槧灏勶級
-        processed_data = self._process_user_data_batch(users, current_user_id, titles_map)
-        
-        # 璁＄畻缁熻鏁版嵁
-        total_messages = processed_data['total_messages']
-        
-        # 鐢熸垚瀹屾暣HTML
-        html_template = await self._load_html_template()
-        
-        # 鑾峰彇褰撳墠鏃堕棿
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 鍑嗗妯℃澘鏁版嵁锛堜娇鐢ㄥ瓧鍏告瀯寤轰紭鍖栵級
-        llm_token_text = ""
-        if llm_token_usage and llm_token_usage.get("total_tokens", 0) > 0:
-            lang_llm = {
-                'zh-CN': f"LLM Token 娑堣€? {llm_token_usage.get('total_tokens', 0)} (杈撳叆{llm_token_usage.get('prompt_tokens', 0)}+杈撳嚭{llm_token_usage.get('completion_tokens', 0)})",
-                'en-US': f"LLM Token usage: {llm_token_usage.get('total_tokens', 0)} (in:{llm_token_usage.get('prompt_tokens', 0)}+out:{llm_token_usage.get('completion_tokens', 0)})",
-                'ru-RU': f"LLM 褌芯泻械薪芯胁: {llm_token_usage.get('total_tokens', 0)} (胁褏:{llm_token_usage.get('prompt_tokens', 0)}+胁褘褏:{llm_token_usage.get('completion_tokens', 0)})"
-            }
-            llm_token_text = lang_llm.get(lang, lang_llm['zh-CN'])
-        
-        # 鑾峰彇鍥剧墖璇█璁剧疆
-        lang = getattr(self.config, 'image_language', 'zh-CN')
-        lang_texts = {
-            'zh-CN': {'total': '鎬诲彂瑷€鏁?, 'messages': '鏉?, 'generated_by': '馃 鐢?AstrBot 鍙戣█缁熻鎻掍欢鐢熸垚', 'generate_time': '鐢熸垚鏃堕棿', 'latest_msg': '鏈€杩戝彂瑷€', 'count_suffix': '娆?},
-            'en-US': {'total': 'Total', 'messages': 'msgs', 'generated_by': '馃 Generated by AstrBot Message Stats', 'generate_time': 'Generated', 'latest_msg': 'Last seen', 'count_suffix': 'times'},
-            'ru-RU': {'total': '袙褋械谐芯', 'messages': '褋芯芯斜褖.', 'generated_by': '馃 小谐械薪械褉懈褉芯胁邪薪芯 AstrBot', 'generate_time': '小谐械薪械褉懈褉芯胁邪薪芯', 'latest_msg': '袩芯褋谢械写薪械械', 'count_suffix': '褉邪蟹'}
-        }
-        texts = lang_texts.get(lang, lang_texts['zh-CN'])
-        langs_sep = {
-            'zh-CN': '鈻?鍏朵粬鐢ㄦ埛 鈻?,
-            'en-US': '鈻?Other Users 鈻?,
-            'ru-RU': '鈻?袛褉褍谐懈械 鈻?
-        }
-        
-        template_data = {
-            'group_name': self._escape_html_safe(group_info.group_name or f"缇group_info.group_id}"),
-            'group_id': self._escape_html_safe(str(group_info.group_id)),
-            'title': self._escape_html_safe(title),
-            'total_messages': self._escape_html_safe(str(total_messages)),
-            'user_count': self._escape_html_safe(str(len(users))),
-            'current_time': self._escape_html_safe(current_time),
-            'llm_token_info': self._escape_html_safe(llm_token_text) if llm_token_text else "",
-            'lang': lang,
-            'text_total': self._escape_html_safe(texts['total']),
-            'text_messages': self._escape_html_safe(texts['messages']),
-            'text_generated_by': self._escape_html_safe(texts['generated_by']),
-            'text_generate_time': self._escape_html_safe(texts['generate_time']),
-            'text_latest_msg': self._escape_html_safe(texts['latest_msg']),
-            'text_count_suffix': self._escape_html_safe(texts['count_suffix']),
-            'text_separator': self._escape_html_safe(langs_sep.get(lang, langs_sep['zh-CN']))
-        }
-        
-        # 鐢熸垚HTML鍐呭锛堜紭鍖栨覆鏌撻€昏緫锛?        return await self._render_html_template(html_template, template_data, processed_data['user_items'])
-    
-    def _process_user_data_batch(self, users: List[UserData], current_user_id: Optional[str], 
-                                  titles_map: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
-        """鎵归噺澶勭悊鐢ㄦ埛鏁版嵁锛屼紭鍖栨€ц兘
-        
-        Args:
-            users: 鐢ㄦ埛鏁版嵁鍒楄〃
-            current_user_id: 褰撳墠鐢ㄦ埛ID锛岀敤浜庨珮浜樉绀?            titles_map: 鐢ㄦ埛ID鍒板ご琛旂殑鏄犲皠瀛楀吀 {user_id: title}
-                      浼樺厛浣跨敤姝ゅ弬鏁颁腑鐨勫ご琛旓紝鑻ユ棤鍒欏洖閫€鍒?user.display_title
-        """
-        if not users:
-            return {'total_messages': 0, 'user_items': []}
-        
-        # 棰勮绠楃粺璁℃暟鎹?- 浣跨敤鏃堕棿娈靛唴鐨勫彂瑷€鏁?        total_messages = sum(user.display_total if user.display_total is not None else user.message_count for user in users)
-        
-        # 鎵归噺鐢熸垚鐢ㄦ埛椤圭洰
-        user_items = []
-        current_user_found = False
-        
-        for i, user in enumerate(users):
-            is_current_user = current_user_id and user.user_id == current_user_id
-            if is_current_user:
-                current_user_found = True
-            
-            # 浣跨敤鏃堕棿娈靛唴鐨勫彂瑷€鏁?            user_messages = user.display_total if user.display_total is not None else user.message_count
-            
-            # 鑾峰彇 LLM 澶磋锛氫紭鍏堜娇鐢?titles_map锛屽叾娆?user.display_title
-            user_title = None
-            user_title_color = None
-            if titles_map and user.user_id in titles_map:
-                raw = titles_map[user.user_id]
-                if isinstance(raw, dict):
-                    user_title = raw.get("title")
-                    user_title_color = raw.get("color")
-                else:
-                    user_title = raw
-            elif user.display_title:
-                user_title = user.display_title
-                user_title_color = user.display_title_color
-
-            
-            if user_title:
-                self.logger.info(f"澶磋鏁版嵁: {user.nickname} -> 銆寋user_title}銆?)
-            
-            avatar_url = self._get_avatar_url(user.user_id)
-            user_items.append({
-                'rank': i + 1,
-                'nickname': user.nickname,
-                'title': user_title,
-                'title_color': user_title_color,
-                'avatar_url': avatar_url,
-                'avatar_color': self._get_avatar_color(user.nickname),
-                'avatar_char': self._get_avatar_char(user.nickname),
-                'total': user_messages,
-                'percentage': (user_messages / total_messages * 100) if total_messages > 0 else 0,
-                'last_date': user.last_date or "鏈煡",
-                'is_current_user': is_current_user,
-                'is_separator': False
-            })
-        
-        # 濡傛灉褰撳墠鐢ㄦ埛涓嶅湪鎺掕姒滀腑锛屾坊鍔犲埌鏈熬
-        if current_user_id and not current_user_found:
-            current_user_data = next((user for user in users if user.user_id == current_user_id), None)
-            if current_user_data:
-                current_user_messages = current_user_data.display_total if current_user_data.display_total is not None else current_user_data.message_count
-                current_rank = sum(1 for user in users if (user.display_total if user.display_total is not None else user.message_count) > current_user_messages) + 1
-                user_items.append({
-                    'rank': current_rank,
-                    'nickname': current_user_data.nickname,
-                    'avatar_url': self._get_avatar_url(current_user_data.user_id),
-                    'total': current_user_messages,
-                    'percentage': (current_user_messages / total_messages * 100) if total_messages > 0 else 0,
-                    'last_date': current_user_data.last_date or "鏈煡",
-                    'is_current_user': True,
-                    'is_separator': True
-                })
-        
-        return {
-            'total_messages': total_messages,
-            'user_items': user_items
-        }
-
-    
-    async def _render_html_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
-        """浼樺寲鐨凥TML妯℃澘娓叉煋鏂规硶"""
-        try:
-            if JINJA2_AVAILABLE and self.jinja_env:
-                # 浣跨敤缂撳瓨鐨勬ā鏉?                cached_template = await self._get_cached_template()
-                if cached_template and isinstance(cached_template, Template):
-                    template_data['user_items'] = user_items
-                    return cached_template.render(**template_data)
-                else:
-                    # 鍔ㄦ€佸垱寤烘ā鏉?                    template = self.jinja_env.from_string(template_content)
-                    template_data['user_items'] = user_items
-                    return template.render(**template_data)
-            else:
-                # Jinja2涓嶅彲鐢ㄦ椂锛屼娇鐢ㄧ函鍗犱綅绗﹀洖閫€妯℃澘
-                return await self._render_fallback(template_data, user_items)
-        except (ValueError, TypeError, KeyError, PermissionError, UnicodeDecodeError) as e:
-            self.logger.error(f"HTML妯℃澘娓叉煋澶辫触({type(e).__name__}): {e}")
-            return await self._render_fallback(template_data, user_items)
-    
-    async def _render_fallback(self, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
-        """缁熶竴鐨勫洖閫€娓叉煋鏂规硶"""
-        fallback_template = await self._get_fallback_template()
-        return self._render_fallback_template(fallback_template, template_data, user_items)
-    
-    def _render_fallback_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
-        """鍥為€€妯℃澘娓叉煋鏂规硶锛堝畨鍏ㄧ増鏈級
-        
-        褰揓inja2涓嶅彲鐢ㄦ椂鐨勫畨鍏ㄥ洖閫€鏂规銆?        浣跨敤绠€鍗曠殑瀛楃涓叉浛鎹㈣€屼笉鏄痜ormat()锛岄伩鍏岼inja2璇硶鍐茬獊銆?        """
-        # 浣跨敤鐢熸垚鍣ㄨ〃杈惧紡浼樺寲鍐呭瓨浣跨敤
-        user_items_html = ''.join(self._generate_user_item_html_safe(item) for item in user_items)
-        
-        # 瀹夊叏鏇挎崲锛氶伩鍏岼inja2璇硶鍐茬獊
-        safe_content = template_content
-        for key, value in template_data.items():
-            if isinstance(value, str):
-                # 瀵瑰瓧绗︿覆鍊艰繘琛孒TML杞箟
-                safe_value = self._escape_html_safe(value)
-                safe_content = safe_content.replace('{{' + key + '}}', safe_value)
-            else:
-                # 瀵逛簬闈炲瓧绗︿覆鍊硷紝鐩存帴鏇挎崲
-                safe_content = safe_content.replace('{{' + key + '}}', str(value))
-        
-        # 鏇挎崲user_items
-        safe_content = safe_content.replace('{{user_items}}', user_items_html)
-        
-        return safe_content
-    
-    # 鏈€绠€鍗曠殑绌烘暟鎹洖閫€HTML甯搁噺
-    def _get_fallback_lang_texts(self):
-        """鑾峰彇鍥為€€鏂囨锛堢敤浜巁fallback绛夋病鏈塴ang涓婁笅鏂囩殑鍦版柟锛?""
-        lang = getattr(self.config, 'image_language', 'zh-CN')
-        texts = {
-            'zh-CN': {'rank_title': '鍙戣█鎺掕姒?, 'no_data': '鏆傛棤鍙戣█鏁版嵁', 'waiting': '鏈熷緟澶у鐨勬椿璺冨彂瑷€锛?, 'empty_data': '鏆傛棤鏁版嵁', 'latest_msg': '鏈€杩戝彂瑷€', 'count_unit': '娆?, 'unknown_user': '鏈煡鐢ㄦ埛', 'unknown': '鏈煡'},
-            'en-US': {'rank_title': 'Message Leaderboard', 'no_data': 'No message data yet', 'waiting': 'Looking forward to active chatting!', 'empty_data': 'No data', 'latest_msg': 'Last seen', 'count_unit': 'times', 'unknown_user': 'Unknown User', 'unknown': 'Unknown'},
-            'ru-RU': {'rank_title': '孝邪斜谢懈褑邪 谢懈写械褉芯胁', 'no_data': '袧械褌 写邪薪薪褘褏 芯 褋芯芯斜褖械薪懈褟褏', 'waiting': '袞写褢屑 邪泻褌懈胁薪褘褏 褋芯芯斜褖械薪懈泄!', 'empty_data': '袧械褌 写邪薪薪褘褏', 'latest_msg': '袩芯褋谢械写薪械械', 'count_unit': '褉邪蟹', 'unknown_user': '袧械懈蟹胁械褋褌薪褘泄', 'unknown': '袧械懈蟹胁械褋褌薪芯'}
-        }
-        return texts.get(lang, texts['zh-CN'])
-
-    @property
-    def _fallback_texts(self):
-        return self._get_fallback_lang_texts()
-
-    _EMPTY_FALLBACK_HTML_TPL = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>{title}</title>
-</head>
-<body>
-    <h1>{title}</h1>
-    <p>{no_data}</p>
-</body>
-</html>"""
-
-    async def _generate_empty_html(self, group_info: GroupInfo, title: str) -> str:
-        """鐢熸垚绌烘暟鎹瓾TML锛堜紭鍖栫増鏈級"""
-        # 灏濊瘯浠庣紦瀛樿幏鍙栫┖鏁版嵁妯℃澘
-        empty_template_cache_key = 'empty_template'
-        async with self._cache_lock:
-            cached_empty = self._template_cache.get(empty_template_cache_key)
-        
-        if cached_empty:
-            template_content = cached_empty['content']
-            template_obj = cached_empty.get('template')
-        else:
-            # 鍒涘缓绌烘暟鎹ā鏉?            template_content = await self._get_empty_template()
-            async with self._cache_lock:
-                self._template_cache[empty_template_cache_key] = {
-                    'content': template_content,
-                    'template': self.jinja_env.from_string(template_content) if self.jinja_env else None
-                }
-            template_obj = self._template_cache[empty_template_cache_key].get('template')
-        
-        # 鍑嗗妯℃澘鏁版嵁
-        template_data = {
-            'group_name': self._escape_html_safe(group_info.group_name or f"缇group_info.group_id}"),
-            'group_id': self._escape_html_safe(str(group_info.group_id)),
-            'title': self._escape_html_safe(title)
-        }
-        
-        try:
-            if JINJA2_AVAILABLE and self.jinja_env and template_obj:
-                return template_obj.render(**template_data)
-            else:
-                # 浣跨敤瀹夊叏鐨勫瓧绗︿覆鏇挎崲鑰屼笉鏄痜ormat()
-                safe_content = template_content
-                for key, value in template_data.items():
-                    if isinstance(value, str):
-                        safe_value = self._escape_html_safe(value)
-                        safe_content = safe_content.replace('{{' + key + '}}', safe_value)
-                    else:
-                        safe_content = safe_content.replace('{{' + key + '}}', str(value))
-                return safe_content
-        except (ValueError, TypeError, KeyError, PermissionError, UnicodeDecodeError) as e:
-            self.logger.error(f"绌烘暟鎹瓾TML妯℃澘娓叉煋澶辫触({type(e).__name__}): {e}")
-            return self._EMPTY_FALLBACK_HTML
-    
-    async def _get_empty_template(self) -> str:
-        """鑾峰彇绌烘暟鎹ā鏉匡紙绠€鍖栫増鏈級"""
-        return """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>{{ title }}</title>
-    <style>
-        body {
-            font-family: 'Microsoft YaHei', sans-serif;
-            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
-            margin: 0;
-            padding: 40px;
-            text-align: center;
-        }
-        .container {
-            background: rgba(255,255,255,0.95);
-            border-radius: 20px;
-            padding: 60px;
-            max-width: 600px;
-            margin: 0 auto;
-        }
-        .title {
-            font-size: 32px;
-            color: #1F2937;
-            margin-bottom: 20px;
-        }
-        .subtitle {
-            font-size: 24px;
-            color: #6B7280;
-            margin-bottom: 40px;
-        }
-        .empty-text {
-            font-size: 18px;
-            color: #9CA3AF;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="title">{{ group_name }}[{{ group_id }}]</div>
-        <div class="subtitle">{{ title }}</div>
-        <div class="empty-text">
-            鏆傛棤鍙戣█鏁版嵁
-            <br>
-            鏈熷緟澶у鐨勬椿璺冨彂瑷€锛?        </div>
-    </div>
-</body>
-</html>"""
-    
-    def _generate_user_item_html_safe(self, item_data: Dict[str, Any]) -> str:
-        """鐢熸垚瀹夊叏鐨勭敤鎴锋潯鐩瓾TML锛堜娇鐢↗inja2妯℃澘锛?""
-        # 浣跨敤鍏冪粍鍜屽瓧鍏搁鏋勫缓鍑忓皯瀛楃涓叉搷浣?        css_classes = self._get_css_classes(item_data)
-        styles = self._get_item_styles(item_data)
-        safe_content = self._get_safe_content(item_data)
-        
-        # 鍑嗗妯℃澘鏁版嵁
-        template_data = {
-            'rank': item_data['rank'],
-            'total': item_data['total'],
-            'percentage': item_data['percentage'],
-            'css_classes': css_classes,
-            'styles': styles,
-            'safe_content': safe_content
-        }
-        
-        # 浣跨敤Jinja2妯℃澘娓叉煋锛岀‘淇濇墍鏈夊姩鎬佸唴瀹归兘缁忚繃杞箟
-        if JINJA2_AVAILABLE:
-            try:
-                if not hasattr(self, '_user_item_macro_template'):
-                    self._user_item_macro_template = self._load_user_item_macro_template()
-                
-                if self._user_item_macro_template:
-                    return self._user_item_macro_template.render(item_data=template_data)
-            except Exception as e:
-                self.logger.warning(f"Jinja2妯℃澘娓叉煋澶辫触锛屼娇鐢ㄥ鐢ㄦ柟妗? {e}")
-        
-        # 澶囩敤鏂规锛氫娇鐢ㄦ洿瀹夊叏鐨勫瓧绗︿覆鎷兼帴鏂瑰紡
-        # 瀵规墍鏈夊姩鎬佸唴瀹硅繘琛孒TML杞箟
-        safe_nickname = html.escape(safe_content['nickname'])
-        safe_avatar_url = html.escape(safe_content['avatar_url'])
-        safe_last_date = html.escape(safe_content['last_date'])
-        safe_separator_style = html.escape(styles['separator'])
-        safe_rank_color = html.escape(styles['rank_color'])
-        safe_avatar_border = html.escape(styles['avatar_border'])
-        
-        # 浣跨敤瀛楃涓叉嫾鎺ヨ€屼笉鏄痜-string锛屾彁楂樺畨鍏ㄦ€?        # 鏍规嵁褰撳墠鐢ㄦ埛鐘舵€侀€夋嫨鍚堥€傜殑鎺掑悕鏍峰紡绫?        rank_class = "rank-current" if item_data['is_current_user'] else "rank"
-        
-        # 鑾峰彇澶磋鍜岄鑹?        user_title_raw = item_data.get('title', None) or item_data.get('safe_content', {}).get('title', None)
-        user_title_color_raw = item_data.get('title_color', None) or item_data.get('safe_content', {}).get('title_color', None)
-        user_title_html = ""
-        if user_title_raw:
-            safe_title = html.escape(str(user_title_raw))
-            safe_title_color = html.escape(str(user_title_color_raw)) if user_title_color_raw else '#7C3AED'
-            user_title_html = f'<div class="user-title" style="color:{safe_title_color};background:{safe_title_color}22;font-size:13px;font-weight:700;padding:0px 8px;border-radius:10px;display:inline-block;margin-left:8px;vertical-align:middle;line-height:24px;">銆寋safe_title}銆?/div>'
-        
-        html_parts = [
-            f'<div class="{css_classes["item"]}" style="{safe_separator_style}">',
-            f'    <div class="{rank_class}">#{item_data["rank"]}</div>',
-            f'    <img class="avatar" src="{safe_avatar_url}" style="border-color: {safe_avatar_border};" />',
-            '    <div class="info">',
-            '        <div class="name-date">',
-            f'            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span class="nickname" style="font-size:24px;font-weight:600;color:#1F2937;line-height:1.3;">{safe_nickname}</span>{user_title_html}</div>',
-            f'            <div class="date" style="color:#6B7280;font-size:15px;">鏈€杩戝彂瑷€: {safe_last_date}</div>',
-            '        </div>',
-            '        <div class="stats">',
-            f'            <div class="count">{item_data["total"]} 娆?/div>',
-            f'            <div class="percentage">({item_data["percentage"]:.2f}%)</div>',
-            '        </div>',
-            '    </div>',
-            '</div>'
-        ]
-        return '\n'.join(html_parts)
-    
-    def _get_css_classes(self, item_data: Dict[str, Any]) -> Dict[str, str]:
-        """鑾峰彇CSS绫诲悕锛堜紭鍖栫増鏈級"""
-        return {
-            'item': "user-item-current" if item_data['is_current_user'] else "user-item"
-        }
-    
-    def _get_item_styles(self, item_data: Dict[str, Any]) -> Dict[str, str]:
-        """鑾峰彇鏍峰紡淇℃伅锛堜紭鍖栫増鏈級"""
-        return {
-            'separator': "margin-top: 20px; border-top: 2px dashed #bdc3c7;" if item_data['is_separator'] else "margin-top: 10px;",
-            'rank_color': "#EF4444" if item_data['is_current_user'] else "#3B82F6",
-            'avatar_border': "#ffffff"
-        }
-    
-    def _get_safe_content(self, item_data: Dict[str, Any]) -> Dict[str, str]:
-        """鑾峰彇瀹夊叏鐨勫唴瀹癸紙浼樺寲鐗堟湰锛?""
-        # 鎵归噺杞箟鎻愰珮鎬ц兘
-        safe_nickname = self._escape_html_safe(str(item_data.get('nickname', '鏈煡鐢ㄦ埛')))
-        safe_last_date = self._escape_html_safe(str(item_data.get('last_date', '鏈煡')))
-        safe_avatar_url = self._validate_url_safe(str(item_data.get('avatar_url', '')))
-        
-        # 澶勭悊澶磋杞箟
-        title = item_data.get('title', None)
-        safe_title = self._escape_html_safe(str(title)) if title else None
-        
-        # 濡傛灉澶村儚URL鏃犳晥锛屼娇鐢ㄩ粯璁ゅご鍍?        if not safe_avatar_url:
-            safe_avatar_url = self._get_avatar_url(str(item_data.get('user_id', '0')))
-        
-        content = {
-            'nickname': safe_nickname,
-            'last_date': safe_last_date,
-            'avatar_url': safe_avatar_url
-        }
-        
-        if safe_title:
-            content['title'] = safe_title
-            
-        return content
-
-    def _escape_html_safe(self, text: str) -> str:
-        """瀹夊叏鐨凥TML杞箟"""
-        if not isinstance(text, str):
-            text = str(text)
-        return html.escape(text, quote=True)
-    
-    def _validate_url_safe(self, url: str) -> str:
-        """楠岃瘉骞舵竻鐞哢RL"""
-        if not isinstance(url, str):
-            url = str(url)
-        
-        # 鍩烘湰URL楠岃瘉
-        if not url or not url.startswith(('http://', 'https://')):
-            return ""
-        
-        # 绉婚櫎娼滃湪鐨勬伓鎰忓瓧绗?        url = url.replace('<', '').replace('>', '').replace('"', '').replace("'", '')
-        return url
-
-    _AVATAR_COLORS = ['#F59E0B','#3B82F6','#8B5CF6','#EC4899','#10B981','#EF4444','#14B8A6','#F97316','#6366F1','#84CC16','#06B6D4','#D946EF','#0EA5E9','#EAB308','#A855F7']
-
-    def _get_avatar_color(self, nickname: str) -> str:
-        h = 0
-        for c in str(nickname):
-            h = (h * 31 + ord(c)) & 0xFFFFFFFF
-        return self._AVATAR_COLORS[h % len(self._AVATAR_COLORS)]
-
-    def _get_avatar_char(self, nickname: str) -> str:
-        n = str(nickname).strip()
-        return n[0] if n else '?'
-
-    def _get_avatar_url(self, user_id: str, platform: str = "") -> str:
-        """鑾峰彇鐢ㄦ埛澶村儚URL
-        鏍规嵁鐢ㄦ埛ID鑷姩鍒ゆ柇骞冲彴锛孮Q鑾峰彇鐪熷疄澶村儚锛孴elegram閫氳繃API鑾峰彇銆?        
-        Args:
-            user_id (str): 鐢ㄦ埛ID
-            platform (str): 骞冲彴绫诲瀷锛堝鏋滀紶鍏ュ垯浼樺厛浣跨敤锛屽惁鍒欒嚜鍔ㄦ娴嬶級
-            
-        Returns:
-            str: 澶村儚URL
-        """
-        # 濡傛灉澶栭儴娌℃湁鏄惧紡浼犲叆platform锛屽垯浣跨敤self.platform锛堢敱鐢熸垚鍏ュ彛璁剧疆锛?        if not platform:
-            platform = self.platform
-        
-        # 鏀寔澶氱骞冲彴鐨勫ご鍍忔湇鍔?        avatar_services = {
-            "qq": "https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640",
-            "telegram": "",  # Telegram閫氳繃API鑾峰彇
-            "discord": "https://cdn.discordapp.com/embed/avatars/{avatar_id}.png",
-            "webchat": "",
-            "default": ""
-        }
-        
-        # 濡傛灉澶栭儴宸叉槑纭寚瀹氫簡骞冲彴锛岀洿鎺ヤ娇鐢紝涓嶈繘琛孖D鑷姩鎺ㄦ柇
-        explicit_platform = bool(platform)
-        if not explicit_platform:
-            # 鏍规嵁鐢ㄦ埛ID鑷姩鍒ゆ柇骞冲彴锛堜粎褰撳閮ㄦ湭鎸囧畾鏃讹級
-            try:
-                user_id_str = str(user_id).strip()
-                if not user_id_str.lstrip('-').isdigit():
-                    platform = "default"
-                else:
-                    uid_num = int(user_id_str)
-                    if uid_num < 0:
-                        platform = "telegram"
-                    elif uid_num > 10000000000000000:
-                        platform = "discord"
-                    else:
-                        platform = "qq"
-                        # QQ鍙锋湁鏁堟€э細5-12浣嶆暟瀛楁墠鏄湁鏁圦Q
-                        if len(user_id_str) < 5 or len(user_id_str) > 12:
-                            return ""
-            except (ValueError, TypeError):
-                platform = "default"
-        
-        # Telegram閫氳繃API鑾峰彇锛屽悓姝ヨ繑鍥炵┖璁╂ā鏉垮洖閫€鍒板僵鑹插瓧姣?        if platform == "telegram":
-            return ""
-        
-        service_url = avatar_services.get(platform, avatar_services["default"])
-        if not service_url:
-            return ""
-        
-        # 瀹夊叏璁＄畻 avatar_id锛圖iscord鐢級
-        try:
-            uid_int = abs(int(user_id))
-            avatar_id = uid_int % 5
-        except (ValueError, TypeError):
-            avatar_id = 0
-        
-        return service_url.format(user_id=user_id, avatar_id=avatar_id)
-    
-    @safe_file_operation(default_return="")
-    async def _load_html_template(self) -> str:
-        """鍔犺浇HTML妯℃澘锛堢畝鍖栫紦瀛橀€昏緫锛?""
-        try:
-            # 灏濊瘯浠庣紦瀛樿幏鍙?            cached_template = await self._get_cached_template()
-            if cached_template:
-                if isinstance(cached_template, str):
-                    return cached_template
-                elif hasattr(cached_template, 'source'):
-                    # Jinja2妯℃澘瀵硅薄锛岃繑鍥炴簮浠ｇ爜
-                    return cached_template.source
-                else:
-                    return str(cached_template)
-            
-            # 缂撳瓨鏈懡涓紝浠庢枃浠跺姞杞?            if await aiofiles.os.path.exists(self.template_path):
-                async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
-                    content = await f.read()
-                
-                # 鏇存柊缂撳瓨
-                await self._update_template_cache(content)
-                return content
-            else:
-                self.logger.warning(f"妯℃澘鏂囦欢涓嶅瓨鍦? {self.template_path}")
-                # 浣跨敤榛樿妯℃澘
-                default_template = await self._get_default_template()
-                await self._update_template_cache(default_template)
-                return default_template
-        except FileNotFoundError as e:
-            self.logger.warning(f"妯℃澘鏂囦欢鏈壘鍒? {e}")
-            default_template = await self._get_default_template()
-            await self._update_template_cache(default_template)
-            return default_template
-        except PermissionError as e:
-            self.logger.error(f"妯℃澘鏂囦欢鏉冮檺閿欒: {e}")
-            default_template = await self._get_default_template()
-            await self._update_template_cache(default_template)
-            return default_template
-        except UnicodeDecodeError as e:
-            self.logger.error(f"妯℃澘鏂囦欢缂栫爜閿欒: {e}")
-            default_template = await self._get_default_template()
-            await self._update_template_cache(default_template)
-            return default_template
-    
-    async def _get_fallback_template(self) -> str:
-        """鑾峰彇绾崰浣嶇鍥為€€妯℃澘锛堜笉鍚獼inja2璇硶锛?        
-        褰揓inja2涓嶅彲鐢ㄦ椂浣跨敤鐨勫畨鍏ㄦā鏉匡紝鍙娇鐢ㄧ畝鍗曠殑{{ key }}鍗犱綅绗︼紝
-        涓嶅寘鍚换浣旿inja2鐗规湁鐨勮娉曪紙濡傚惊鐜€佽繃婊ゅ櫒绛夛級銆?        """
-        return """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
-            padding: 30px;
-            min-height: 100vh;
-        }
-        .title {
-            text-align: center;
-            font-size: 28px;
-            color: #1F2937;
-            margin-bottom: 25px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
-        }
-        .user-list {
-            max-width: 800px;
-            margin: 0 auto;
-            background: rgba(255,255,255,0.9);
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            padding: 20px;
-        }
-        .user-item {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s ease;
-            border-radius: 8px;
-            margin-bottom: 8px;
-        }
-        .user-item:hover {
-            transform: translateX(10px);
-            background-color: rgba(59, 130, 246, 0.05);
-        }
-        .user-item-current {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s ease;
-            background: linear-gradient(135deg, #F3E8FF 0%, #EDE9FE 100%);
-            border-radius: 12px;
-            margin-bottom: 8px;
-            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.1);
-        }
-        .user-item-current:hover {
-            transform: translateX(10px);
-            box-shadow: 0 4px 8px rgba(139, 92, 246, 0.2);
-        }
-        .rank {
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: bold;
-            margin-right: 20px;
-            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
-            transition: transform 0.2s ease;
-        }
-        .rank:hover {
-            transform: scale(1.1);
-        }
-        .rank-current {
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: bold;
-            margin-right: 20px;
-            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.3);
-            transition: transform 0.2s ease;
-        }
-        .rank-current:hover {
-            transform: scale(1.1);
-        }
-        .avatar {
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            margin-right: 20px;
-            border: 3px solid #ffffff;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
-            transition: transform 0.2s ease;
-        }
-        .avatar:hover {
-            transform: scale(1.05);
-        }
-        .info {
-            flex: 1;
-        }
-        .name-date {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 8px;
-        }
-        .nickname {
-            font-size: 18px;
-            font-weight: bold;
-            color: #1F2937;
-        }
-        .nickname-with-title {
-            max-width: 150px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .user-title {
-            font-size: 12px;
-            color: #7C3AED;
-            font-weight: 700;
-            background: #EDE9FE;
-            padding: 2px 6px;
-            border-radius: 10px;
-            white-space: nowrap;
-            flex-shrink: 0;
-            margin-left: 6px;
-        }
-        .date {
-            font-size: 14px;
-            color: #6B7280;
-        }
-        .stats {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-        .count {
-            font-size: 16px;
-            font-weight: bold;
-            color: #3B82F6;
-        }
-        .percentage {
-            font-size: 14px;
-            color: #6B7280;
-        }
-        .footer {
-            text-align: center;
-            margin-top: 20px;
-            color: #6B7280;
-            font-size: 14px;
-        }
-    </style>
-</head>
-<body>
-    <div class="title">{{ group_name }}[{{ group_id }}]</div>
-    <div class="title">{{ title }}</div>
-    <div class="user-list">
-        {{ user_items }}
-    </div>
-    <div class="footer">
-        <p>馃 鐢?AstrBot 鍙戣█缁熻鎻掍欢鐢熸垚</p>
-        <p>鐢熸垚鏃堕棿: {{ current_time }}</p>
-        {{ llm_token_info }}
-    </div>
-</body>
-</html>"""
-
-    async def _get_default_template(self) -> str:
-        """鑾峰彇榛樿HTML妯℃澘锛堜紭鍖栫増鏈級"""
-        # 灏濊瘯浠庣紦瀛樿幏鍙栭粯璁ゆā鏉?        default_cache_key = 'default_template'
-        async with self._cache_lock:
-            cached_default = self._template_cache.get(default_cache_key)
-        
-        if cached_default:
-            return cached_default['content']
-        
-        # 鍒涘缓浼樺寲鐨勯粯璁ゆā鏉匡紙浣跨敤绠€鍗曞崰浣嶇锛?        default_template = """
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ title }}</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        body {
-            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
-            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
-            padding: 30px;
-            min-height: 100vh;
-        }
-        .title {
-            text-align: center;
-            font-size: 28px;
-            color: #1F2937;
-            margin-bottom: 25px;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
-        }
-        .user-list {
-            max-width: 800px;
-            margin: 0 auto;
-            background: rgba(255,255,255,0.9);
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            padding: 20px;
-        }
-        .user-item {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s ease;
-            border-radius: 8px;
-            margin-bottom: 8px;
-        }
-        .user-item:hover {
-            transform: translateX(10px);
-            background-color: rgba(59, 130, 246, 0.05);
-        }
-        .user-item-current {
-            display: flex;
-            align-items: center;
-            padding: 15px;
-            border-bottom: 1px solid #E5E7EB;
-            transition: transform 0.2s ease;
-            background: linear-gradient(135deg, #F3E8FF 0%, #EDE9FE 100%);
-            border-radius: 12px;
-            margin-bottom: 8px;
-            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.1);
-        }
-        .user-item-current:hover {
-            transform: translateX(10px);
-            box-shadow: 0 4px 8px rgba(139, 92, 246, 0.2);
-        }
-        .rank {
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: bold;
-            margin-right: 20px;
-            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
-            transition: transform 0.2s ease;
-        }
-        .rank:hover {
-            transform: scale(1.1);
-        }
-        .rank-current {
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
-            color: white;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 18px;
-            font-weight: bold;
-            margin-right: 20px;
-            box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
-            transition: transform 0.2s ease;
-        }
-        .rank-current:hover {
-            transform: scale(1.1);
-        }
-        .avatar {
-            width: 60px;
-            height: 60px;
-            border-radius: 50%;
-            margin: 0 20px;
-            border: 3px solid #3B82F6;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        }
-        .info {
-            flex: 1;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-        .name-date {
-            display: flex;
-            flex-direction: column;
-        }
-        .nickname {
-            font-size: 20px;
-            color: #1F2937;
-            font-weight: 500;
-            line-height: 1.2;
-        }
-        .date {
-            color: #6B7280;
-            font-size: 14px;
-            margin-top: 4px;
-        }
-        .stats {
-            text-align: right;
-            font-size: 18px;
-            min-width: 120px;
-        }
-        .count {
-            color: #EF4444;
-            font-weight: bold;
-        }
-        .percentage {
-            color: #22C55E;
-            font-size: 16px;
-        }
-    </style>
-</head>
-<body>
-    <div class="title">{{ group_name }}[{{ group_id }}]</div>
-    <div class="title">{{ title }}</div>
-    <div class="user-list">
-        {{ user_items }}
-    </div>
-</body>
-</html>
-"""
-        
-        # 缂撳瓨榛樿妯℃澘
-        async with self._cache_lock:
-            self._template_cache[default_cache_key] = {
-                'content': default_template,
-                'template': self.jinja_env.from_string(default_template) if self.jinja_env else None
-            }
-        
-        return default_template
-    
-    async def test_browser_connection(self) -> bool:
-        """娴嬭瘯娴忚鍣ㄨ繛鎺ワ紙鎳掑姞杞斤紝鐢ㄥ畬鍗冲叧锛?""
-        try:
-            await self._ensure_browser()
-            
-            # 鍒涘缓涓€涓祴璇曢〉闈?            test_page = await self.browser.new_page()
-            
-            # 璁剧疆鍩烘湰鍐呭
-            await test_page.set_content("<html><body><h1>Test</h1></body></html>")
-            
-            # 楠岃瘉椤甸潰鍙互姝ｅ父鍔犺浇
-            title = await test_page.title()
-            
-            await test_page.close()
-            
-            return title == "Test"
-        
-        except FileNotFoundError as e:
-            self.logger.error(f"娴忚鍣ㄥ彲鎵ц鏂囦欢鏈壘鍒? {e}")
-            return False
-        except PermissionError as e:
-            self.logger.error(f"娴嬭瘯娴忚鍣ㄨ繛鎺ユ潈闄愪笉瓒? {e}")
-            return False
-        except ConnectionError as e:
-            self.logger.error(f"娴忚鍣ㄨ繛鎺ュけ璐? {e}")
-            return False
-        except RuntimeError as e:
-            # 鎹曡幏娴忚鍣ㄨ繍琛屾椂閿欒锛屽椤甸潰鎿嶄綔澶辫触銆丣avaScript鎵ц閿欒绛?            self.logger.error(f"娴嬭瘯娴忚鍣ㄨ繛鎺ュけ璐? {e}")
-            return False
-        finally:
-            await self._close_browser()
-    
-    async def get_browser_info(self) -> Dict[str, Any]:
-        """鑾峰彇娴忚鍣ㄤ俊鎭?""
-        try:
-            if not self.browser:
-                return {"status": "not_initialized"}
-            
-            return {
-                "status": "ready",
-                "user_agent": await self.browser.user_agent(),
-                "viewport": {"width": self.width, "height": self.viewport_height}
-            }
-        
-        except FileNotFoundError as e:
-            return {"status": "error", "error": f"娴忚鍣ㄦ枃浠舵湭鎵惧埌: {e}"}
-        except PermissionError as e:
-            return {"status": "error", "error": f"鏉冮檺涓嶈冻: {e}"}
-        except ConnectionError as e:
-            return {"status": "error", "error": f"杩炴帴澶辫触: {e}"}
-        except RuntimeError as e:
-            # 鎹曡幏娴忚鍣ㄤ俊鎭幏鍙栨椂鐨勮繍琛屾椂閿欒锛屽椤甸潰鎿嶄綔澶辫触銆佽祫婧愯闂敊璇瓑
-            return {"status": "error", "error": str(e)}
-    
-    async def clear_cache(self):
-        """娓呯悊妯℃澘缂撳瓨"""
-        async with self._cache_lock:
-            self._template_cache.clear()
-            self.logger.info("妯℃澘缂撳瓨宸叉竻鐞?)
-    
-    async def get_performance_stats(self) -> Dict[str, Any]:
-        """鑾峰彇鎬ц兘缁熻淇℃伅"""
-        cache_stats = await self.get_cache_stats()
-        
-        return {
-            'cache_stats': cache_stats,
-            'cached_templates': list(self._template_cache.keys()),
-            'jinja2_enabled': JINJA2_AVAILABLE and self.jinja_env is not None,
-            'playwright_enabled': PLAYWRIGHT_AVAILABLE,
-            'template_path': str(self.template_path),
-            'template_exists': await aiofiles.os.path.exists(self.template_path) if self.template_path else False
-        }
-    
-    async def optimize_for_batch_generation(self):
-        """涓烘壒閲忕敓鎴愪紭鍖栭厤缃?""
-        # 棰勭儹缂撳瓨
-        await self._preload_templates()
-        
-        # 鍚敤鏇存縺杩涚殑缂撳瓨绛栫暐
-        if self.jinja_env:
-            # Jinja2鐜宸茬粡閰嶇疆浜嗙紦瀛?            self.logger.info("鎵归噺鐢熸垚浼樺寲宸插惎鐢?)
-    
-    async def _load_user_item_macro_template(self):
-        """鍔犺浇鐢ㄦ埛鏉＄洰瀹忔ā鏉匡紙寮傛鐗堟湰锛?""
-        try:
-            macro_path = Path(__file__).parent.parent / "templates" / "user_item_macro.html"
-            if await aiofiles.os.path.exists(macro_path):
-                async with aiofiles.open(macro_path, 'r', encoding='utf-8') as f:
-                    macro_content = await f.read()
-                
-                # 鍒涘缓鐜骞跺姞杞藉畯妯℃澘
-                env = Environment(
-                    loader=FileSystemLoader(str(macro_path.parent)),
-                    autoescape=select_autoescape(['html', 'xml'])
-                )
-                return env.from_string(macro_content)
-        except Exception as e:
-            self.logger.warning(f"鍔犺浇鐢ㄦ埛鏉＄洰瀹忔ā鏉垮け璐? {e}")
-        
-        return None
-
+"""
+图片生成模块
+负责将HTML模板转换为排行榜图片
+"""
+
+import asyncio
+import aiofiles
+from pathlib import Path
+from typing import List, Optional, Dict, Any, Union
+from datetime import datetime
+import tempfile
+import os
+import traceback
+import hashlib
+import json
+import uuid
+
+from astrbot.api import logger as astrbot_logger
+
+# 从集中管理的常量模块导入图片生成配置
+from .constants import (
+    IMAGE_WIDTH,
+    VIEWPORT_HEIGHT,
+    BROWSER_TIMEOUT,
+    DEFAULT_FONT_SIZE,
+    ROW_HEIGHT
+)
+
+# Jinja2模板引擎
+try:
+    from jinja2 import Template, Environment, select_autoescape, FileSystemLoader
+    import html  # 用于HTML转义安全防护
+    JINJA2_AVAILABLE = True
+except ImportError:
+    JINJA2_AVAILABLE = False
+    astrbot_logger.warning("Jinja2未安装，将使用不安全的字符串拼接方式")
+
+try:
+    from playwright.async_api import async_playwright, Browser, Page
+    PLAYWRIGHT_AVAILABLE = True
+except ImportError:
+    PLAYWRIGHT_AVAILABLE = False
+    astrbot_logger.warning("Playwright未安装，图片生成功能将不可用")
+
+from .models import UserData, GroupInfo, PluginConfig
+from .exception_handlers import safe_generation, safe_file_operation
+
+
+
+
+class ImageGenerationError(Exception):
+    """图片生成异常
+    
+    当图片生成过程中发生错误时抛出的自定义异常。
+    
+    Attributes:
+        message (str): 异常消息，描述具体的错误原因
+        
+    Example:
+        >>> raise ImageGenerationError("Playwright未安装，无法生成图片")
+    """
+    pass
+
+
+class ImageGenerator:
+    """图片生成器
+    
+    负责将HTML模板转换为排行榜图片。支持Playwright浏览器自动化和Jinja2模板渲染。
+    
+    主要功能:
+        - 使用Playwright浏览器生成高质量排行榜图片
+        - 支持Jinja2模板引擎进行安全的HTML渲染
+        - 自动调整页面高度和截图尺寸
+        - 包含多层回退机制，确保在各种环境下都能正常工作
+        - 支持当前用户高亮显示
+        - 提供默认模板作为备用方案
+        - 模板缓存机制，提高重复渲染效率
+        
+    Attributes:
+        config (PluginConfig): 插件配置对象，包含生成参数
+        browser (Optional[Browser]): Playwright浏览器实例
+        page (Optional[Page]): Playwright页面实例
+        playwright: Playwright实例
+        logger: 日志记录器
+        width (int): 图片宽度，默认1200像素
+        timeout (int): 页面加载超时时间，默认10秒
+        viewport_height (int): 视口高度，默认1像素
+        template_path (Path): HTML模板文件路径
+        jinja_env (Optional[Environment]): Jinja2环境对象
+        _template_cache (Dict): 模板缓存字典
+        _cache_lock (Lock): 缓存锁，确保线程安全
+        
+    Example:
+        >>> generator = ImageGenerator(config)
+        >>> await generator.initialize()
+        >>> image_path = await generator.generate_rank_image(users, group_info, "排行榜")
+    """
+    
+    def __init__(self, config: PluginConfig):
+        """初始化图片生成器
+        
+        Args:
+            config (PluginConfig): 插件配置对象，包含生成参数和设置
+        """
+        self.config = config
+        self.browser: Optional[Browser] = None
+        self.page: Optional[Page] = None
+        self.playwright = None
+        self.logger = astrbot_logger
+        
+        # 图片生成配置
+        self.width = IMAGE_WIDTH
+        self.timeout = BROWSER_TIMEOUT
+        self.viewport_height = VIEWPORT_HEIGHT
+        
+        # 模板路径 - 根据主题选择
+        self._templates_dir = Path(__file__).parent.parent / "templates"
+        self._update_template_path()
+        
+        # 模板缓存机制
+        self._template_cache: Dict[str, Any] = {}
+        self._cache_lock = asyncio.Lock()
+        self._cache_hits = 0
+        self._cache_misses = 0
+        
+        # 并发控制：浏览器的生命周期管理
+        self._browser_lock = asyncio.Lock()
+        self._active_tasks = 0
+        
+        # Jinja2环境将在initialize方法中初始化
+        self.jinja_env = None
+        
+        # 当前平台类型，由外部在生成图片前设置
+        self.platform = ""
+    
+    def _update_template_path(self):
+        """根据主题配置更新模板路径（支持自动根据时间切换主题）"""
+        theme = getattr(self.config, 'theme', 'default')
+        auto_switch = getattr(self.config, 'auto_theme_switch', False)
+        
+        if auto_switch:
+            # 自动根据时间切换主题
+            theme = self._get_auto_theme(theme)
+            self.logger.info(f"自动主题切换已启用，当前时间匹配主题: {theme}")
+        
+        template_map = {
+            'default': 'rank_template.html',
+            'liquid_glass': 'rank_template_liquid_glass.html',
+            'liquid_glass_dark': 'rank_template_liquid_glass_dark.html',
+        }
+        template_file = template_map.get(theme, 'rank_template.html')
+        self.template_path = self._templates_dir / template_file
+        self.logger.info(f"使用排行榜主题: {theme}, 模板: {template_file}")
+    
+    def _get_auto_theme(self, base_theme: str) -> str:
+        """根据当前时间自动选择合适的主题
+        
+        根据 auto_theme_switch 配置中的 light/dark 切换时间，
+        判断当前应该使用浅色主题还是深色主题。
+        浅色时段使用用户配置的主题（如 liquid_glass），
+        深色时段固定使用 liquid_glass_dark。
+        
+        Args:
+            base_theme: 用户配置的浅色主题名称
+            
+        Returns:
+            str: 主题名称，浅色时段返回 base_theme，深色时段返回 'liquid_glass_dark'
+        """
+        try:
+            switch_times = getattr(self.config, 'theme_switch_times', {"light": "06:00", "dark": "18:00"})
+            now = datetime.now()
+            current_minutes = now.hour * 60 + now.minute
+            
+            # 解析浅色主题开始时间
+            light_time_str = switch_times.get("light", "06:00")
+            light_h, light_m = map(int, light_time_str.split(':'))
+            light_minutes = light_h * 60 + light_m
+            
+            # 解析深色主题开始时间
+            dark_time_str = switch_times.get("dark", "18:00")
+            dark_h, dark_m = map(int, dark_time_str.split(':'))
+            dark_minutes = dark_h * 60 + dark_m
+            
+            # 判断当前时间段
+            if light_minutes <= current_minutes < dark_minutes:
+                # 浅色时间段：使用用户配置的浅色主题
+                return base_theme
+            else:
+                # 深色时间段：使用液态玻璃深色主题
+                return 'liquid_glass_dark'
+        except (ValueError, AttributeError, KeyError, TypeError) as e:
+            self.logger.warning(f"自动主题切换时间解析失败，使用默认主题: {e}")
+            return base_theme
+    
+
+    
+    async def _init_jinja2_env(self):
+        """初始化Jinja2环境
+        
+        创建Jinja2模板环境，启用自动转义以防止XSS攻击。
+        如果Jinja2不可用，将使用不安全的字符串拼接方式作为备用。
+        添加模板缓存机制以提高性能。
+        
+        Returns:
+            None: 无返回值，初始化结果通过日志输出
+            
+        Example:
+            >>> await self._init_jinja2_env()
+            # 将初始化Jinja2环境或记录警告信息
+        """
+        if JINJA2_AVAILABLE:
+            try:
+                # 创建Jinja2环境，启用自动转义和缓存，但不启用异步
+                self.jinja_env = Environment(
+                    autoescape=select_autoescape(['html', 'xml']),
+                    trim_blocks=True,
+                    lstrip_blocks=True,
+                    cache_size=400  # 启用模板缓存，但不启用异步
+                )
+                
+                # 预加载模板文件
+                await self._preload_templates()
+                
+                self.logger.info("Jinja2环境初始化成功，模板缓存已启用")
+            except Exception as e:
+                self.logger.error(f"Jinja2环境初始化失败: {e}")
+                self.jinja_env = None
+        else:
+            self.jinja_env = None
+            self.logger.warning("Jinja2不可用，将使用不安全的字符串拼接")
+    
+    async def _preload_templates(self):
+        """预加载模板文件到缓存"""
+        try:
+            if await aiofiles.os.path.exists(self.template_path):
+                # 使用异步文件读取优化
+                async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
+                    template_content = await f.read()
+                
+                # 缓存模板内容
+                template_hash = self._get_template_hash(template_content)
+                async with self._cache_lock:
+                    self._template_cache['main_template'] = {
+                        'content': template_content,
+                        'hash': template_hash,
+                        'template': self.jinja_env.from_string(template_content) if self.jinja_env else None
+                    }
+                
+                self.logger.info(f"模板预加载完成，缓存键: main_template")
+            else:
+                self.logger.warning(f"模板文件不存在: {self.template_path}")
+        except Exception as e:
+            self.logger.error(f"模板预加载失败: {e}")
+    
+    def _get_template_hash(self, content: str) -> str:
+        """获取模板内容的哈希值，用于缓存验证"""
+        return hashlib.md5(content.encode('utf-8')).hexdigest()
+    
+    async def _get_cached_template(self) -> Optional[Union[str, Template]]:
+        """获取缓存的模板"""
+        async with self._cache_lock:
+            cached = self._template_cache.get('main_template')
+            if cached:
+                self._cache_hits += 1
+                return cached.get('template') if self.jinja_env else cached.get('content')
+            else:
+                self._cache_misses += 1
+                return None
+    
+    async def _update_template_cache(self, content: str):
+        """更新模板缓存"""
+        try:
+            template_hash = self._get_template_hash(content)
+            async with self._cache_lock:
+                self._template_cache['main_template'] = {
+                    'content': content,
+                    'hash': template_hash,
+                    'template': self.jinja_env.from_string(content) if self.jinja_env else None
+                }
+
+        except Exception as e:
+            self.logger.error(f"更新模板缓存失败: {e}")
+    
+    async def get_cache_stats(self) -> Dict[str, int]:
+        """获取缓存统计信息"""
+        async with self._cache_lock:
+            return {
+                'hits': self._cache_hits,
+                'misses': self._cache_misses,
+                'total_requests': self._cache_hits + self._cache_misses,
+                'hit_rate': self._cache_hits / max(1, self._cache_hits + self._cache_misses)
+            }
+    
+    @safe_generation(default_return=None)
+    async def initialize(self):
+        """初始化图片生成器（轻量初始化）
+        
+        只初始化Jinja2模板环境，不启动浏览器。
+        浏览器将在首次生成图片时按需启动（懒加载）。
+        
+        Raises:
+            ImageGenerationError: 当Playwright未安装时抛出
+            
+        Returns:
+            None: 无返回值
+        """
+        if not PLAYWRIGHT_AVAILABLE:
+            self.logger.error("Playwright未安装，图片生成功能将不可用")
+            raise ImageGenerationError("Playwright未安装，无法生成图片")
+        
+        try:
+            self.logger.info("开始初始化图片生成器（轻量模式）...")
+            
+            # 只初始化Jinja2环境，浏览器按需启动
+            await self._init_jinja2_env()
+            
+            self.logger.info("图片生成器初始化完成（浏览器未启动，将在首次生成图片时按需启动）")
+        except FileNotFoundError as e:
+            self.logger.error(f"模板文件未找到: {e}")
+            raise ImageGenerationError(f"模板文件未找到: {e}")
+        except PermissionError as e:
+            self.logger.error(f"权限错误: {e}")
+            raise ImageGenerationError(f"权限不足: {e}")
+        except OSError as e:
+            self.logger.error(f"初始化图片生成器失败: {e}")
+            self.logger.error(f"详细错误: {traceback.format_exc()}")
+            raise ImageGenerationError(f"初始化失败: {e}")
+    
+    async def _ensure_browser(self):
+        """确保浏览器已启动（懒加载）并增加任务计数
+        
+        使用异步锁防止并发启动。如果是第一个任务则启动浏览器，
+        然后增加活跃任务计数器。
+        """
+        async with self._browser_lock:
+            self._active_tasks += 1
+            if self.browser:
+                return
+            
+            self.logger.info("按需启动浏览器...")
+            try:
+                self.playwright = await async_playwright().start()
+                self.browser = await self.playwright.chromium.launch(
+                    headless=True,
+                    args=[
+                        "--no-sandbox",
+                        "--disable-setuid-sandbox",
+                        "--disable-dev-shm-usage",
+                        "--disable-gpu",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--disable-extensions"
+                    ]
+                )
+                self.logger.info("Chromium浏览器启动成功")
+            except Exception as e:
+                self._active_tasks -= 1
+                self.logger.error(f"启动浏览器失败: {e}")
+                raise ImageGenerationError(f"启动浏览器失败: {e}")
+    
+    async def _close_browser(self):
+        """任务完成，减少任务计数，如果计数为0则关闭浏览器释放内存"""
+        async with self._browser_lock:
+            self._active_tasks = max(0, self._active_tasks - 1)
+            
+            if self._active_tasks > 0:
+                # 还有其他任务在使用浏览器，不关闭
+                return
+                
+            try:
+                # 不再在此处关闭self.page，因为页面已变为局部变量，由各自的任务自行关闭
+                if self.browser:
+                    await self.browser.close()
+                    self.browser = None
+                if self.playwright:
+                    await self.playwright.stop()
+                    self.playwright = None
+                self.logger.info("所有渲染任务完成，浏览器已关闭并释放内存")
+            except Exception as e:
+                self.logger.warning(f"关闭浏览器时发生错误: {e}")
+            finally:
+                self.browser = None
+                self.playwright = None
+    
+    async def cleanup(self):
+        """清理资源
+        
+        异步清理图片生成器的所有资源，包括浏览器实例、页面和Playwright对象。
+        确保资源正确释放，避免内存泄漏。
+        
+        Raises:
+            Exception: 当清理过程中发生错误时抛出
+            
+        Returns:
+            None: 无返回值，清理完成后所有资源将被释放
+            
+        Example:
+            >>> await generator.cleanup()
+            >>> print(generator.browser is None)
+            True
+        """
+        try:
+            if self.page:
+                await self.page.close()
+                self.page = None
+            
+            if self.browser:
+                await self.browser.close()
+                self.browser = None
+            
+            if self.playwright:
+                await self.playwright.stop()
+                self.playwright = None
+            
+            self.logger.info("图片生成器资源已清理")
+        
+        except ConnectionError as e:
+            self.logger.error(f"浏览器连接错误: {e}")
+        except Exception as e:
+            self.logger.error(f"清理图片生成器资源失败: {e}")
+    
+    @safe_generation(default_return=None)
+    async def generate_rank_image(self, 
+                                 users: List[UserData], 
+                                 group_info: GroupInfo, 
+                                 title: str,
+                                 current_user_id: Optional[str] = None,
+                                 llm_token_usage: Dict[str, int] = None,
+                                 titles_map: Optional[Dict[str, str]] = None) -> str:
+        """生成排行榜图片（懒加载浏览器，用完即关）
+        
+        Args:
+            users: 用户数据列表（已按发言数降序排列）
+            group_info: 群组信息
+            title: 排行榜标题
+            current_user_id: 当前用户ID，用于高亮显示
+            llm_token_usage: LLM token使用统计
+            titles_map: 用户ID到头衔的映射字典 {user_id: title}
+            
+        Returns:
+            str: 生成的临时图片路径
+            
+        Raises:
+            ImageGenerationError: 图片生成失败时抛出
+        """
+        # 每次生成图片时重新检查主题（支持自动主题切换实时生效）
+        self._update_template_path()
+        
+        # 按需启动浏览器
+        await self._ensure_browser()
+        
+        temp_path = None
+        page = None
+        success = False
+        
+        try:
+            # 创建局部页面变量，防止并发时互相覆盖（开启两倍高清渲染）
+            page = await self.browser.new_page(device_scale_factor=2)
+            
+            # 设置视口
+            await page.set_viewport_size({"width": self.width, "height": self.viewport_height})
+            
+            # 生成HTML内容（显式传入头衔映射）
+            html_content = await self._generate_html(users, group_info, title, current_user_id, llm_token_usage, titles_map)
+            
+            # 设置页面内容（使用 load 而非 networkidle，避免外部资源加载超时）
+            await page.set_content(html_content, wait_until="load")
+            
+            # 等待页面加载完成
+            await page.wait_for_timeout(2000)
+            
+            # 动态调整页面高度
+            body_height = await page.evaluate("document.body.scrollHeight")
+            await page.set_viewport_size({"width": self.width, "height": body_height})
+            
+            # 生成临时文件路径（异步方式）
+            temp_filename = f"rank_image_{uuid.uuid4().hex}.png"
+            temp_path = Path(tempfile.gettempdir()) / temp_filename
+            
+            # 截图
+            await page.screenshot(path=temp_path, full_page=True)
+            
+            success = True
+            return str(temp_path)
+
+        
+        except FileNotFoundError as e:
+            self.logger.error(f"临时文件或资源未找到: {e}")
+            raise ImageGenerationError(f"文件资源未找到: {e}")
+        except PermissionError as e:
+            self.logger.error(f"权限错误: {e}")
+            raise ImageGenerationError(f"权限不足: {e}")
+        except TimeoutError as e:
+            self.logger.error(f"浏览器操作超时: {e}")
+            raise ImageGenerationError(f"操作超时: {e}")
+        except RuntimeError as e:
+            # 捕获浏览器运行时错误，如页面渲染失败、JavaScript执行错误等
+            self.logger.error(f"生成排行榜图片失败: {e}")
+            self.logger.error(f"详细错误: {traceback.format_exc()}")
+            raise ImageGenerationError(f"生成图片失败: {e}")
+        
+        finally:
+            # 清理资源
+            if page:
+                try:
+                    await page.close()
+                except Exception as e:
+                    self.logger.warning(f"关闭页面时发生错误: {e}")
+            
+            # 生成完毕后关闭浏览器释放内存
+            await self._close_browser()
+            
+            # 清理临时文件：如果生成失败，删除已创建的临时文件避免积累
+            if not success and temp_path and temp_path.exists():
+                try:
+                    await aiofiles.os.unlink(str(temp_path))
+                    self.logger.debug(f"已清理失败的临时文件: {temp_path}")
+                except Exception as e:
+                    self.logger.warning(f"清理临时文件失败: {e}")
+    
+    @safe_generation(default_return=None)
+    async def generate_milestone_image(self,
+                                       user_id: str,
+                                       nickname: str,
+                                       milestone_count: int,
+                                       rank: int,
+                                       daily_count: int,
+                                       active_days: int,
+                                       last_date: str,
+                                       group_total_messages: int,
+                                       percentage: float,
+                                       group_info: GroupInfo) -> str:
+        """生成里程碑个人成就卡片图片
+        
+        生成一张精美的个人成就卡片，替代里程碑触发时发送整个排行榜。
+        
+        Args:
+            user_id: 用户ID
+            nickname: 用户昵称
+            milestone_count: 里程碑发言次数
+            rank: 群内排名
+            daily_count: 今日发言数
+            active_days: 活跃天数
+            last_date: 最后发言日期
+            group_total_messages: 群总发言数
+            percentage: 发言占比
+            group_info: 群组信息
+            
+        Returns:
+            str: 生成的图片路径，失败时返回None
+        """
+        # 按需启动浏览器
+        await self._ensure_browser()
+        
+        page = None
+        temp_path = None
+        success = False
+        try:
+            # 创建局部页面变量（里程碑卡片使用较窄的视口，开启两倍高清渲染）
+            page = await self.browser.new_page(device_scale_factor=2)
+            milestone_width = 600
+            await page.set_viewport_size({"width": milestone_width, "height": self.viewport_height})
+            
+            # 加载里程碑模板
+            milestone_template_path = self._templates_dir / "milestone_template.html"
+            template_content = ""
+            if await aiofiles.os.path.exists(milestone_template_path):
+                async with aiofiles.open(milestone_template_path, 'r', encoding='utf-8') as f:
+                    template_content = await f.read()
+            else:
+                self.logger.warning(f"里程碑模板文件不存在: {milestone_template_path}")
+                return None
+            
+            # 准备模板数据
+            avatar_url = self._get_avatar_url(user_id)
+            group_name = group_info.group_name or f"群{group_info.group_id}"
+            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            template_data = {
+                'avatar_url': avatar_url,
+                'nickname': self._escape_html_safe(nickname),
+                'user_id': self._escape_html_safe(str(user_id)),
+                'group_name': self._escape_html_safe(f"{group_name}[{group_info.group_id}]"),
+                'milestone_count': milestone_count,
+                'rank': rank,
+                'daily_count': daily_count,
+                'active_days': active_days,
+                'last_date': self._escape_html_safe(last_date or "未知"),
+                'group_total_messages': group_total_messages,
+                'percentage': f"{percentage:.2f}",
+                'current_time': current_time,
+            }
+            
+            # 渲染模板
+            if JINJA2_AVAILABLE and self.jinja_env:
+                template = self.jinja_env.from_string(template_content)
+                html_content = template.render(**template_data)
+            else:
+                # 回退：简单占位符替换
+                html_content = template_content
+                for key, value in template_data.items():
+                    html_content = html_content.replace('{{ ' + key + ' }}', str(value))
+                    html_content = html_content.replace('{{' + key + '}}', str(value))
+            
+            # 设置页面内容
+            await page.set_content(html_content, wait_until="load")
+            await page.wait_for_timeout(2000)
+            
+            # 动态调整页面高度
+            body_height = await page.evaluate("document.body.scrollHeight")
+            await page.set_viewport_size({"width": milestone_width, "height": body_height})
+            
+            # 生成临时文件
+            temp_filename = f"milestone_{uuid.uuid4().hex}.png"
+            temp_path = Path(tempfile.gettempdir()) / temp_filename
+            
+            # 截图
+            await page.screenshot(path=temp_path, full_page=True)
+            
+            success = True
+            return str(temp_path)
+        
+        except FileNotFoundError as e:
+            self.logger.error(f"里程碑模板文件未找到: {e}")
+            raise ImageGenerationError(f"文件资源未找到: {e}")
+        except PermissionError as e:
+            self.logger.error(f"权限错误: {e}")
+            raise ImageGenerationError(f"权限不足: {e}")
+        except TimeoutError as e:
+            self.logger.error(f"浏览器操作超时: {e}")
+            raise ImageGenerationError(f"操作超时: {e}")
+        except RuntimeError as e:
+            self.logger.error(f"生成里程碑卡片失败: {e}")
+            self.logger.error(f"详细错误: {traceback.format_exc()}")
+            raise ImageGenerationError(f"生成图片失败: {e}")
+        
+        finally:
+            if page:
+                try:
+                    await page.close()
+                except Exception as e:
+                    self.logger.warning(f"关闭页面时发生错误: {e}")
+            
+            # 生成完毕后关闭浏览器释放内存
+            await self._close_browser()
+            
+            # 清理临时文件：如果生成失败，删除已创建的临时文件避免积累
+            if not success and temp_path and temp_path.exists():
+                try:
+                    await aiofiles.os.unlink(str(temp_path))
+                    self.logger.debug(f"已清理失败的里程碑临时文件: {temp_path}")
+                except Exception as e:
+                    self.logger.warning(f"清理里程碑临时文件失败: {e}")
+    
+    @safe_generation(default_return="")
+    async def _generate_html(self, 
+                      users: List[UserData], 
+                      group_info: GroupInfo, 
+                      title: str,
+                      current_user_id: Optional[str] = None,
+                      llm_token_usage: Dict[str, int] = None,
+                      titles_map: Optional[Dict[str, str]] = None) -> str:
+        """生成HTML内容
+        
+        Args:
+            users: 用户数据列表
+            group_info: 群组信息
+            title: 排行榜标题
+            current_user_id: 当前用户ID，用于高亮显示
+            llm_token_usage: LLM token使用统计
+            titles_map: 用户ID到头衔的映射字典 {user_id: title}
+        """
+        if not users:
+            return await self._generate_empty_html(group_info, title)
+        
+        # 使用批量处理优化性能（显式传入头衔映射）
+        processed_data = self._process_user_data_batch(users, current_user_id, titles_map)
+        
+        # 计算统计数据
+        total_messages = processed_data['total_messages']
+        
+        # 生成完整HTML
+        html_template = await self._load_html_template()
+        
+        # 获取当前时间
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 准备模板数据（使用字典构建优化）
+        llm_token_text = ""
+        if llm_token_usage and llm_token_usage.get("total_tokens", 0) > 0:
+            llm_token_text = f"LLM Token 消耗: {llm_token_usage.get('total_tokens', 0)} (输入{llm_token_usage.get('prompt_tokens', 0)}+输出{llm_token_usage.get('completion_tokens', 0)})"
+        
+        template_data = {
+            'group_name': self._escape_html_safe(group_info.group_name or f"群{group_info.group_id}"),
+            'group_id': self._escape_html_safe(str(group_info.group_id)),
+            'title': self._escape_html_safe(title),
+            'total_messages': self._escape_html_safe(str(total_messages)),
+            'user_count': self._escape_html_safe(str(len(users))),
+            'current_time': self._escape_html_safe(current_time),
+            'llm_token_info': self._escape_html_safe(llm_token_text) if llm_token_text else ""
+        }
+        
+        # 生成HTML内容（优化渲染逻辑）
+        return await self._render_html_template(html_template, template_data, processed_data['user_items'])
+    
+    def _process_user_data_batch(self, users: List[UserData], current_user_id: Optional[str], 
+                                  titles_map: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """批量处理用户数据，优化性能
+        
+        Args:
+            users: 用户数据列表
+            current_user_id: 当前用户ID，用于高亮显示
+            titles_map: 用户ID到头衔的映射字典 {user_id: title}
+                      优先使用此参数中的头衔，若无则回退到 user.display_title
+        """
+        if not users:
+            return {'total_messages': 0, 'user_items': []}
+        
+        # 预计算统计数据 - 使用时间段内的发言数
+        total_messages = sum(user.display_total if user.display_total is not None else user.message_count for user in users)
+        
+        # 批量生成用户项目
+        user_items = []
+        current_user_found = False
+        
+        for i, user in enumerate(users):
+            is_current_user = current_user_id and user.user_id == current_user_id
+            if is_current_user:
+                current_user_found = True
+            
+            # 使用时间段内的发言数
+            user_messages = user.display_total if user.display_total is not None else user.message_count
+            
+            # 获取 LLM 头衔：优先使用 titles_map，其次 user.display_title
+            user_title = None
+            user_title_color = None
+            if titles_map and user.user_id in titles_map:
+                raw = titles_map[user.user_id]
+                if isinstance(raw, dict):
+                    user_title = raw.get("title")
+                    user_title_color = raw.get("color")
+                else:
+                    user_title = raw
+            elif user.display_title:
+                user_title = user.display_title
+                user_title_color = user.display_title_color
+
+            
+            if user_title:
+                self.logger.info(f"头衔数据: {user.nickname} -> 「{user_title}」")
+            
+            user_items.append({
+                'rank': i + 1,
+                'nickname': user.nickname,
+                'title': user_title,
+                'title_color': user_title_color,
+                'avatar_url': self._get_avatar_url(user.user_id),
+                'total': user_messages,
+                'percentage': (user_messages / total_messages * 100) if total_messages > 0 else 0,
+                'last_date': user.last_date or "未知",
+                'is_current_user': is_current_user,
+                'is_separator': False
+            })
+        
+        # 如果当前用户不在排行榜中，添加到末尾
+        if current_user_id and not current_user_found:
+            current_user_data = next((user for user in users if user.user_id == current_user_id), None)
+            if current_user_data:
+                current_user_messages = current_user_data.display_total if current_user_data.display_total is not None else current_user_data.message_count
+                current_rank = sum(1 for user in users if (user.display_total if user.display_total is not None else user.message_count) > current_user_messages) + 1
+                user_items.append({
+                    'rank': current_rank,
+                    'nickname': current_user_data.nickname,
+                    'avatar_url': self._get_avatar_url(current_user_data.user_id),
+                    'total': current_user_messages,
+                    'percentage': (current_user_messages / total_messages * 100) if total_messages > 0 else 0,
+                    'last_date': current_user_data.last_date or "未知",
+                    'is_current_user': True,
+                    'is_separator': True
+                })
+        
+        return {
+            'total_messages': total_messages,
+            'user_items': user_items
+        }
+
+    
+    async def _render_html_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
+        """优化的HTML模板渲染方法"""
+        try:
+            if JINJA2_AVAILABLE and self.jinja_env:
+                # 使用缓存的模板
+                cached_template = await self._get_cached_template()
+                if cached_template and isinstance(cached_template, Template):
+                    template_data['user_items'] = user_items
+                    return cached_template.render(**template_data)
+                else:
+                    # 动态创建模板
+                    template = self.jinja_env.from_string(template_content)
+                    template_data['user_items'] = user_items
+                    return template.render(**template_data)
+            else:
+                # Jinja2不可用时，使用纯占位符回退模板
+                return await self._render_fallback(template_data, user_items)
+        except (ValueError, TypeError, KeyError, PermissionError, UnicodeDecodeError) as e:
+            self.logger.error(f"HTML模板渲染失败({type(e).__name__}): {e}")
+            return await self._render_fallback(template_data, user_items)
+    
+    async def _render_fallback(self, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
+        """统一的回退渲染方法"""
+        fallback_template = await self._get_fallback_template()
+        return self._render_fallback_template(fallback_template, template_data, user_items)
+    
+    def _render_fallback_template(self, template_content: str, template_data: Dict[str, Any], user_items: List[Dict[str, Any]]) -> str:
+        """回退模板渲染方法（安全版本）
+        
+        当Jinja2不可用时的安全回退方案。
+        使用简单的字符串替换而不是format()，避免Jinja2语法冲突。
+        """
+        # 使用生成器表达式优化内存使用
+        user_items_html = ''.join(self._generate_user_item_html_safe(item) for item in user_items)
+        
+        # 安全替换：避免Jinja2语法冲突
+        safe_content = template_content
+        for key, value in template_data.items():
+            if isinstance(value, str):
+                # 对字符串值进行HTML转义
+                safe_value = self._escape_html_safe(value)
+                safe_content = safe_content.replace('{{' + key + '}}', safe_value)
+            else:
+                # 对于非字符串值，直接替换
+                safe_content = safe_content.replace('{{' + key + '}}', str(value))
+        
+        # 替换user_items
+        safe_content = safe_content.replace('{{user_items}}', user_items_html)
+        
+        return safe_content
+    
+    # 最简单的空数据回退HTML常量
+    _EMPTY_FALLBACK_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>发言排行榜</title>
+</head>
+<body>
+    <h1>发言排行榜</h1>
+    <p>暂无数据</p>
+</body>
+</html>"""
+
+    async def _generate_empty_html(self, group_info: GroupInfo, title: str) -> str:
+        """生成空数据HTML（优化版本）"""
+        # 尝试从缓存获取空数据模板
+        empty_template_cache_key = 'empty_template'
+        async with self._cache_lock:
+            cached_empty = self._template_cache.get(empty_template_cache_key)
+        
+        if cached_empty:
+            template_content = cached_empty['content']
+            template_obj = cached_empty.get('template')
+        else:
+            # 创建空数据模板
+            template_content = await self._get_empty_template()
+            async with self._cache_lock:
+                self._template_cache[empty_template_cache_key] = {
+                    'content': template_content,
+                    'template': self.jinja_env.from_string(template_content) if self.jinja_env else None
+                }
+            template_obj = self._template_cache[empty_template_cache_key].get('template')
+        
+        # 准备模板数据
+        template_data = {
+            'group_name': self._escape_html_safe(group_info.group_name or f"群{group_info.group_id}"),
+            'group_id': self._escape_html_safe(str(group_info.group_id)),
+            'title': self._escape_html_safe(title)
+        }
+        
+        try:
+            if JINJA2_AVAILABLE and self.jinja_env and template_obj:
+                return template_obj.render(**template_data)
+            else:
+                # 使用安全的字符串替换而不是format()
+                safe_content = template_content
+                for key, value in template_data.items():
+                    if isinstance(value, str):
+                        safe_value = self._escape_html_safe(value)
+                        safe_content = safe_content.replace('{{' + key + '}}', safe_value)
+                    else:
+                        safe_content = safe_content.replace('{{' + key + '}}', str(value))
+                return safe_content
+        except (ValueError, TypeError, KeyError, PermissionError, UnicodeDecodeError) as e:
+            self.logger.error(f"空数据HTML模板渲染失败({type(e).__name__}): {e}")
+            return self._EMPTY_FALLBACK_HTML
+    
+    async def _get_empty_template(self) -> str:
+        """获取空数据模板（简化版本）"""
+        return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>{{ title }}</title>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
+            margin: 0;
+            padding: 40px;
+            text-align: center;
+        }
+        .container {
+            background: rgba(255,255,255,0.95);
+            border-radius: 20px;
+            padding: 60px;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        .title {
+            font-size: 32px;
+            color: #1F2937;
+            margin-bottom: 20px;
+        }
+        .subtitle {
+            font-size: 24px;
+            color: #6B7280;
+            margin-bottom: 40px;
+        }
+        .empty-text {
+            font-size: 18px;
+            color: #9CA3AF;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="title">{{ group_name }}[{{ group_id }}]</div>
+        <div class="subtitle">{{ title }}</div>
+        <div class="empty-text">
+            暂无发言数据
+            <br>
+            期待大家的活跃发言！
+        </div>
+    </div>
+</body>
+</html>"""
+    
+    def _generate_user_item_html_safe(self, item_data: Dict[str, Any]) -> str:
+        """生成安全的用户条目HTML（使用Jinja2模板）"""
+        # 使用元组和字典预构建减少字符串操作
+        css_classes = self._get_css_classes(item_data)
+        styles = self._get_item_styles(item_data)
+        safe_content = self._get_safe_content(item_data)
+        
+        # 准备模板数据
+        template_data = {
+            'rank': item_data['rank'],
+            'total': item_data['total'],
+            'percentage': item_data['percentage'],
+            'css_classes': css_classes,
+            'styles': styles,
+            'safe_content': safe_content
+        }
+        
+        # 使用Jinja2模板渲染，确保所有动态内容都经过转义
+        if JINJA2_AVAILABLE:
+            try:
+                if not hasattr(self, '_user_item_macro_template'):
+                    self._user_item_macro_template = self._load_user_item_macro_template()
+                
+                if self._user_item_macro_template:
+                    return self._user_item_macro_template.render(item_data=template_data)
+            except Exception as e:
+                self.logger.warning(f"Jinja2模板渲染失败，使用备用方案: {e}")
+        
+        # 备用方案：使用更安全的字符串拼接方式
+        # 对所有动态内容进行HTML转义
+        safe_nickname = html.escape(safe_content['nickname'])
+        safe_avatar_url = html.escape(safe_content['avatar_url'])
+        safe_last_date = html.escape(safe_content['last_date'])
+        safe_separator_style = html.escape(styles['separator'])
+        safe_rank_color = html.escape(styles['rank_color'])
+        safe_avatar_border = html.escape(styles['avatar_border'])
+        
+        # 使用字符串拼接而不是f-string，提高安全性
+        # 根据当前用户状态选择合适的排名样式类
+        rank_class = "rank-current" if item_data['is_current_user'] else "rank"
+        
+        # 获取头衔和颜色
+        user_title_raw = item_data.get('title', None) or item_data.get('safe_content', {}).get('title', None)
+        user_title_color_raw = item_data.get('title_color', None) or item_data.get('safe_content', {}).get('title_color', None)
+        user_title_html = ""
+        if user_title_raw:
+            safe_title = html.escape(str(user_title_raw))
+            safe_title_color = html.escape(str(user_title_color_raw)) if user_title_color_raw else '#7C3AED'
+            user_title_html = f'<div class="user-title" style="color:{safe_title_color};background:{safe_title_color}22;font-size:13px;font-weight:700;padding:0px 8px;border-radius:10px;display:inline-block;margin-left:8px;vertical-align:middle;line-height:24px;">「{safe_title}」</div>'
+        
+        html_parts = [
+            f'<div class="{css_classes["item"]}" style="{safe_separator_style}">',
+            f'    <div class="{rank_class}">#{item_data["rank"]}</div>',
+            f'    <img class="avatar" src="{safe_avatar_url}" style="border-color: {safe_avatar_border};" />',
+            '    <div class="info">',
+            '        <div class="name-date">',
+            f'            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span class="nickname" style="font-size:24px;font-weight:600;color:#1F2937;line-height:1.3;">{safe_nickname}</span>{user_title_html}</div>',
+            f'            <div class="date" style="color:#6B7280;font-size:15px;">最近发言: {safe_last_date}</div>',
+            '        </div>',
+            '        <div class="stats">',
+            f'            <div class="count">{item_data["total"]} 次</div>',
+            f'            <div class="percentage">({item_data["percentage"]:.2f}%)</div>',
+            '        </div>',
+            '    </div>',
+            '</div>'
+        ]
+        return '\n'.join(html_parts)
+    
+    def _get_css_classes(self, item_data: Dict[str, Any]) -> Dict[str, str]:
+        """获取CSS类名（优化版本）"""
+        return {
+            'item': "user-item-current" if item_data['is_current_user'] else "user-item"
+        }
+    
+    def _get_item_styles(self, item_data: Dict[str, Any]) -> Dict[str, str]:
+        """获取样式信息（优化版本）"""
+        return {
+            'separator': "margin-top: 20px; border-top: 2px dashed #bdc3c7;" if item_data['is_separator'] else "margin-top: 10px;",
+            'rank_color': "#EF4444" if item_data['is_current_user'] else "#3B82F6",
+            'avatar_border': "#ffffff"
+        }
+    
+    def _get_safe_content(self, item_data: Dict[str, Any]) -> Dict[str, str]:
+        """获取安全的内容（优化版本）"""
+        # 批量转义提高性能
+        safe_nickname = self._escape_html_safe(str(item_data.get('nickname', '未知用户')))
+        safe_last_date = self._escape_html_safe(str(item_data.get('last_date', '未知')))
+        safe_avatar_url = self._validate_url_safe(str(item_data.get('avatar_url', '')))
+        
+        # 处理头衔转义
+        title = item_data.get('title', None)
+        safe_title = self._escape_html_safe(str(title)) if title else None
+        
+        # 如果头像URL无效，使用默认头像
+        if not safe_avatar_url:
+            safe_avatar_url = self._get_avatar_url(str(item_data.get('user_id', '0')))
+        
+        content = {
+            'nickname': safe_nickname,
+            'last_date': safe_last_date,
+            'avatar_url': safe_avatar_url
+        }
+        
+        if safe_title:
+            content['title'] = safe_title
+            
+        return content
+
+    def _escape_html_safe(self, text: str) -> str:
+        """安全的HTML转义"""
+        if not isinstance(text, str):
+            text = str(text)
+        return html.escape(text, quote=True)
+    
+    def _validate_url_safe(self, url: str) -> str:
+        """验证并清理URL"""
+        if not isinstance(url, str):
+            url = str(url)
+        
+        # 基本URL验证
+        if not url or not url.startswith(('http://', 'https://')):
+            return ""
+        
+        # 移除潜在的恶意字符
+        url = url.replace('<', '').replace('>', '').replace('"', '').replace("'", '')
+        return url
+
+    def _get_avatar_url(self, user_id: str, platform: str = "") -> str:
+        """获取用户头像URL
+        
+        Args:
+            user_id (str): 用户ID
+            platform (str): 平台类型，支持 'qq', 'telegram', 'discord' 等
+            
+        Returns:
+            str: 头像URL
+        """
+        # 优先使用参数传入的平台，其次使用 self.platform（由 main.py 在生成图片前设置）
+        if not platform:
+            platform = self.platform
+        
+        # 如果仍未识别出平台，默认返回空让模板回退彩色字母头像
+        if not platform:
+            return ""
+        
+        # 支持多种平台的头像服务
+        avatar_services = {
+            "qq": "https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640",
+            "telegram": "",
+            "discord": "https://cdn.discordapp.com/embed/avatars/{avatar_id}.png",
+            "default": ""  # 默认返回空，让模板回退到彩色字母头像
+        }
+        
+        service_url = avatar_services.get(platform, "")
+        
+        # 安全计算 avatar_id：处理负数ID（Telegram）和非数字字符串ID
+        try:
+            uid_int = abs(int(user_id))  # 取绝对值，确保为正数
+            avatar_id = uid_int % 5
+        except (ValueError, TypeError):
+            # 如果 user_id 不是有效数字，使用默认值
+            avatar_id = 0
+        
+        return service_url.format(user_id=user_id, avatar_id=avatar_id)
+    
+    @safe_file_operation(default_return="")
+    async def _load_html_template(self) -> str:
+        """加载HTML模板（简化缓存逻辑）"""
+        try:
+            # 尝试从缓存获取
+            cached_template = await self._get_cached_template()
+            if cached_template:
+                if isinstance(cached_template, str):
+                    return cached_template
+                elif hasattr(cached_template, 'source'):
+                    # Jinja2模板对象，返回源代码
+                    return cached_template.source
+                else:
+                    return str(cached_template)
+            
+            # 缓存未命中，从文件加载
+            if await aiofiles.os.path.exists(self.template_path):
+                async with aiofiles.open(self.template_path, 'r', encoding='utf-8') as f:
+                    content = await f.read()
+                
+                # 更新缓存
+                await self._update_template_cache(content)
+                return content
+            else:
+                self.logger.warning(f"模板文件不存在: {self.template_path}")
+                # 使用默认模板
+                default_template = await self._get_default_template()
+                await self._update_template_cache(default_template)
+                return default_template
+        except FileNotFoundError as e:
+            self.logger.warning(f"模板文件未找到: {e}")
+            default_template = await self._get_default_template()
+            await self._update_template_cache(default_template)
+            return default_template
+        except PermissionError as e:
+            self.logger.error(f"模板文件权限错误: {e}")
+            default_template = await self._get_default_template()
+            await self._update_template_cache(default_template)
+            return default_template
+        except UnicodeDecodeError as e:
+            self.logger.error(f"模板文件编码错误: {e}")
+            default_template = await self._get_default_template()
+            await self._update_template_cache(default_template)
+            return default_template
+    
+    async def _get_fallback_template(self) -> str:
+        """获取纯占位符回退模板（不含Jinja2语法）
+        
+        当Jinja2不可用时使用的安全模板，只使用简单的{{ key }}占位符，
+        不包含任何Jinja2特有的语法（如循环、过滤器等）。
+        """
+        return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
+            padding: 30px;
+            min-height: 100vh;
+        }
+        .title {
+            text-align: center;
+            font-size: 28px;
+            color: #1F2937;
+            margin-bottom: 25px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        }
+        .user-list {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.9);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        .user-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #E5E7EB;
+            transition: transform 0.2s ease;
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        .user-item:hover {
+            transform: translateX(10px);
+            background-color: rgba(59, 130, 246, 0.05);
+        }
+        .user-item-current {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #E5E7EB;
+            transition: transform 0.2s ease;
+            background: linear-gradient(135deg, #F3E8FF 0%, #EDE9FE 100%);
+            border-radius: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.1);
+        }
+        .user-item-current:hover {
+            transform: translateX(10px);
+            box-shadow: 0 4px 8px rgba(139, 92, 246, 0.2);
+        }
+        .rank {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank:hover {
+            transform: scale(1.1);
+        }
+        .rank-current {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank-current:hover {
+            transform: scale(1.1);
+        }
+        .avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            margin-right: 20px;
+            border: 3px solid #ffffff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: transform 0.2s ease;
+        }
+        .avatar:hover {
+            transform: scale(1.05);
+        }
+        .info {
+            flex: 1;
+        }
+        .name-date {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .nickname {
+            font-size: 18px;
+            font-weight: bold;
+            color: #1F2937;
+        }
+        .nickname-with-title {
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .user-title {
+            font-size: 12px;
+            color: #7C3AED;
+            font-weight: 700;
+            background: #EDE9FE;
+            padding: 2px 6px;
+            border-radius: 10px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            margin-left: 6px;
+        }
+        .date {
+            font-size: 14px;
+            color: #6B7280;
+        }
+        .stats {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .count {
+            font-size: 16px;
+            font-weight: bold;
+            color: #3B82F6;
+        }
+        .percentage {
+            font-size: 14px;
+            color: #6B7280;
+        }
+        .footer {
+            text-align: center;
+            margin-top: 20px;
+            color: #6B7280;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="title">{{ group_name }}[{{ group_id }}]</div>
+    <div class="title">{{ title }}</div>
+    <div class="user-list">
+        {{ user_items }}
+    </div>
+    <div class="footer">
+        <p>🤖 由 AstrBot 发言统计插件生成</p>
+        <p>生成时间: {{ current_time }}</p>
+        {{ llm_token_info }}
+    </div>
+</body>
+</html>"""
+
+    async def _get_default_template(self) -> str:
+        """获取默认HTML模板（优化版本）"""
+        # 尝试从缓存获取默认模板
+        default_cache_key = 'default_template'
+        async with self._cache_lock:
+            cached_default = self._template_cache.get(default_cache_key)
+        
+        if cached_default:
+            return cached_default['content']
+        
+        # 创建优化的默认模板（使用简单占位符）
+        default_template = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #E9EFF6 0%, #D6E4F0 100%);
+            padding: 30px;
+            min-height: 100vh;
+        }
+        .title {
+            text-align: center;
+            font-size: 28px;
+            color: #1F2937;
+            margin-bottom: 25px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.1);
+        }
+        .user-list {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.9);
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        .user-item {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #E5E7EB;
+            transition: transform 0.2s ease;
+            border-radius: 8px;
+            margin-bottom: 8px;
+        }
+        .user-item:hover {
+            transform: translateX(10px);
+            background-color: rgba(59, 130, 246, 0.05);
+        }
+        .user-item-current {
+            display: flex;
+            align-items: center;
+            padding: 15px;
+            border-bottom: 1px solid #E5E7EB;
+            transition: transform 0.2s ease;
+            background: linear-gradient(135deg, #F3E8FF 0%, #EDE9FE 100%);
+            border-radius: 12px;
+            margin-bottom: 8px;
+            box-shadow: 0 2px 4px rgba(139, 92, 246, 0.1);
+        }
+        .user-item-current:hover {
+            transform: translateX(10px);
+            box-shadow: 0 4px 8px rgba(139, 92, 246, 0.2);
+        }
+        .rank {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank:hover {
+            transform: scale(1.1);
+        }
+        .rank-current {
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #EF4444 0%, #DC2626 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+            font-weight: bold;
+            margin-right: 20px;
+            box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+            transition: transform 0.2s ease;
+        }
+        .rank-current:hover {
+            transform: scale(1.1);
+        }
+        .avatar {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            margin: 0 20px;
+            border: 3px solid #3B82F6;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .info {
+            flex: 1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .name-date {
+            display: flex;
+            flex-direction: column;
+        }
+        .nickname {
+            font-size: 20px;
+            color: #1F2937;
+            font-weight: 500;
+            line-height: 1.2;
+        }
+        .date {
+            color: #6B7280;
+            font-size: 14px;
+            margin-top: 4px;
+        }
+        .stats {
+            text-align: right;
+            font-size: 18px;
+            min-width: 120px;
+        }
+        .count {
+            color: #EF4444;
+            font-weight: bold;
+        }
+        .percentage {
+            color: #22C55E;
+            font-size: 16px;
+        }
+    </style>
+</head>
+<body>
+    <div class="title">{{ group_name }}[{{ group_id }}]</div>
+    <div class="title">{{ title }}</div>
+    <div class="user-list">
+        {{ user_items }}
+    </div>
+</body>
+</html>
+"""
+        
+        # 缓存默认模板
+        async with self._cache_lock:
+            self._template_cache[default_cache_key] = {
+                'content': default_template,
+                'template': self.jinja_env.from_string(default_template) if self.jinja_env else None
+            }
+        
+        return default_template
+    
+    async def test_browser_connection(self) -> bool:
+        """测试浏览器连接（懒加载，用完即关）"""
+        try:
+            await self._ensure_browser()
+            
+            # 创建一个测试页面
+            test_page = await self.browser.new_page()
+            
+            # 设置基本内容
+            await test_page.set_content("<html><body><h1>Test</h1></body></html>")
+            
+            # 验证页面可以正常加载
+            title = await test_page.title()
+            
+            await test_page.close()
+            
+            return title == "Test"
+        
+        except FileNotFoundError as e:
+            self.logger.error(f"浏览器可执行文件未找到: {e}")
+            return False
+        except PermissionError as e:
+            self.logger.error(f"测试浏览器连接权限不足: {e}")
+            return False
+        except ConnectionError as e:
+            self.logger.error(f"浏览器连接失败: {e}")
+            return False
+        except RuntimeError as e:
+            # 捕获浏览器运行时错误，如页面操作失败、JavaScript执行错误等
+            self.logger.error(f"测试浏览器连接失败: {e}")
+            return False
+        finally:
+            await self._close_browser()
+    
+    async def get_browser_info(self) -> Dict[str, Any]:
+        """获取浏览器信息"""
+        try:
+            if not self.browser:
+                return {"status": "not_initialized"}
+            
+            return {
+                "status": "ready",
+                "user_agent": await self.browser.user_agent(),
+                "viewport": {"width": self.width, "height": self.viewport_height}
+            }
+        
+        except FileNotFoundError as e:
+            return {"status": "error", "error": f"浏览器文件未找到: {e}"}
+        except PermissionError as e:
+            return {"status": "error", "error": f"权限不足: {e}"}
+        except ConnectionError as e:
+            return {"status": "error", "error": f"连接失败: {e}"}
+        except RuntimeError as e:
+            # 捕获浏览器信息获取时的运行时错误，如页面操作失败、资源访问错误等
+            return {"status": "error", "error": str(e)}
+    
+    async def clear_cache(self):
+        """清理模板缓存"""
+        async with self._cache_lock:
+            self._template_cache.clear()
+            self.logger.info("模板缓存已清理")
+    
+    async def get_performance_stats(self) -> Dict[str, Any]:
+        """获取性能统计信息"""
+        cache_stats = await self.get_cache_stats()
+        
+        return {
+            'cache_stats': cache_stats,
+            'cached_templates': list(self._template_cache.keys()),
+            'jinja2_enabled': JINJA2_AVAILABLE and self.jinja_env is not None,
+            'playwright_enabled': PLAYWRIGHT_AVAILABLE,
+            'template_path': str(self.template_path),
+            'template_exists': await aiofiles.os.path.exists(self.template_path) if self.template_path else False
+        }
+    
+    async def optimize_for_batch_generation(self):
+        """为批量生成优化配置"""
+        # 预热缓存
+        await self._preload_templates()
+        
+        # 启用更激进的缓存策略
+        if self.jinja_env:
+            # Jinja2环境已经配置了缓存
+            self.logger.info("批量生成优化已启用")
+    
+    async def _load_user_item_macro_template(self):
+        """加载用户条目宏模板（异步版本）"""
+        try:
+            macro_path = Path(__file__).parent.parent / "templates" / "user_item_macro.html"
+            if await aiofiles.os.path.exists(macro_path):
+                async with aiofiles.open(macro_path, 'r', encoding='utf-8') as f:
+                    macro_content = await f.read()
+                
+                # 创建环境并加载宏模板
+                env = Environment(
+                    loader=FileSystemLoader(str(macro_path.parent)),
+                    autoescape=select_autoescape(['html', 'xml'])
+                )
+                return env.from_string(macro_content)
+        except Exception as e:
+            self.logger.warning(f"加载用户条目宏模板失败: {e}")
+        
+        return None
+

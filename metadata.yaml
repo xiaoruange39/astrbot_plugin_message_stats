@@ -1,12 +1,12 @@
-name: "astrbot_plugin_message_stats"
-display_name: AstrBot 缇ゅ彂瑷€缁熻鎻掍欢
-author: "xiaoruange39 & AMYdd00"
-description: "QQ缇ゆ秷鎭粺璁℃彃浠讹紝鏀寔娑堟伅鏁伴噺缁熻鍜屾帓琛屾鐢熸垚"
-short_description: "缁熻缇ゆ垚鍛樺彂瑷€娆℃暟锛屾敮鎸佸绉嶆帓琛屾鍜屽畾鏃舵帹閫?
-version: "1.9.2"
-repo: "https://github.com/xiaoruange39/astrbot_plugin_message_stats"
-support_platforms:
-  - aiocqhttp
-  - telegram
-  - discord
-  - lark
+name: "astrbot_plugin_message_stats"
+display_name: AstrBot 群发言统计插件
+author: "xiaoruange39 & AMYdd00"
+description: "QQ群消息统计插件，支持消息数量统计和排行榜生成"
+short_description: "统计群成员发言次数，支持多种排行榜和定时推送"
+version: "1.9.2"
+repo: "https://github.com/xiaoruange39/astrbot_plugin_message_stats"
+support_platforms:
+  - aiocqhttp
+  - telegram
+  - discord
+  - lark
