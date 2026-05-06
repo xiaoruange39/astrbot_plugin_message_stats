@@ -1085,16 +1085,15 @@ class ImageGenerator:
         if not platform:
             platform = self.platform
         
-        # 如果仍未识别出平台，默认返回空让模板回退彩色字母头像
+        # 如果仍未识别出平台，默认为 QQ（适配未设置平台的旧有调用路径）
         if not platform:
-            return ""
+            platform = "qq"
         
         # 支持多种平台的头像服务
         avatar_services = {
             "qq": "https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=640",
-            "telegram": "",
+            "telegram": "",  # Telegram 返回空，模板回退到彩色字母头像
             "discord": "https://cdn.discordapp.com/embed/avatars/{avatar_id}.png",
-            "default": ""  # 默认返回空，让模板回退到彩色字母头像
         }
         
         service_url = avatar_services.get(platform, "")
