@@ -66,7 +66,7 @@ def _iter_nested_sources(source: Any, keys: Iterable[str]) -> Iterable[Any]:
                 yield user
 
 
-def _iter_sources(event: Any) -> Iterable[Any]:
+def _iter_sources(event: Any, *, include_group_containers: bool = False) -> Iterable[Any]:
     if event is None:
         return
 
@@ -81,6 +81,19 @@ def _iter_sources(event: Any) -> Iterable[Any]:
         "event",
         "raw_message",
     )
+    if include_group_containers:
+        # Some adapters keep conversation metadata on the raw platform
+        # message. For example, Discord exposes the channel as
+        # ``raw_message.channel`` rather than copying its name to
+        # ``AstrBotMessage``.
+        attr_names += (
+            "channel",
+            "chat",
+            "conversation",
+            "room",
+            "thread",
+            "guild",
+        )
 
     while stack:
         current = stack.pop(0)
@@ -106,7 +119,7 @@ def _read_event_sender_name(event: Any) -> Optional[str]:
 
 
 def extract_group_name_from_event(event: Any) -> Optional[str]:
-    for source in _iter_sources(event):
+    for source in _iter_sources(event, include_group_containers=True):
         group_name = _read_first_text(source, GROUP_NAME_KEYS)
         if group_name:
             return group_name
@@ -117,9 +130,11 @@ def extract_group_message_snapshot(event: Any, user_id: str) -> GroupMessageSnap
     framework_sender_name = _read_event_sender_name(event)
     card = None
     base_nickname = None
-    group_name = None
+    group_name = extract_group_name_from_event(event)
     avatar_url = None
 
+    # Keep group containers out of this traversal: channel/guild objects can
+    # also expose a generic ``name`` field, which must not become a nickname.
     for source in _iter_sources(event):
         person_sources = [source]
         person_sources.extend(_iter_nested_sources(source, (
@@ -139,10 +154,7 @@ def extract_group_message_snapshot(event: Any, user_id: str) -> GroupMessageSnap
             if avatar_url is None:
                 avatar_url = _read_first_text(person, AVATAR_URL_KEYS)
 
-        if group_name is None:
-            group_name = _read_first_text(source, GROUP_NAME_KEYS)
-
-        if card and base_nickname and group_name and avatar_url:
+        if card and base_nickname and avatar_url:
             break
 
     nickname = framework_sender_name or card or base_nickname or f"用户{user_id}"
