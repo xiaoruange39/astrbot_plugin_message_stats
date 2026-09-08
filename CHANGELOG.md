@@ -7,10 +7,11 @@
 
 ### 🔧 技术改进
 - `utils/qq_official_helper.py` 新增 `fetch_official_group_name()`：借 botpy 的 `Route` + 适配器 client 已鉴权的 HTTP 客户端发请求；`client.api` 在调用时才读，避免 webhook 适配器登录后替换 `client.api`/`client.http` 导致拿到未鉴权的旧实例
-- 查询结果带 TTL 缓存（命中 1 小时）与失败退避（网络故障 5 分钟、权限被拒 24 小时），并对同群并发查询加锁，避免每条消息都打一次请求；请求单独设 8 秒超时，不受 webhook 适配器 300 秒超时影响
+- 查询结果带 TTL 缓存（命中 1 小时）与失败退避（网络/服务端故障 5 分钟；权限被拒或未装 botpy 24 小时），并对同群并发查询加锁，避免每条消息都打一次请求
+- 群名查询位于消息处理路径上，单独设 5 秒超时，不沿用 webhook 适配器 `BotHttp` 自带的 300 秒超时
 - 只对形如官方群 openid 的 ID 发起查询，频道消息（`group_id` 是数字 `channel_id`）直接跳过
 - `_cache_group_name()` 改为返回解析出的群名，记录发言时一并写入群数据文件；`_get_group_name()` 在 PlatformHelper 取不到时补一次官方 OpenAPI 查询，覆盖定时推送/里程碑自动推送这类无事件对象的场景
-- 新增 `tests/test_qq_official_group_name.py`，覆盖缓存命中、失败退避分级、并发合并请求、频道 ID 与非官方平台跳过
+- 新增 `tests/test_qq_official_group_name.py`（7 个用例），覆盖缓存命中、失败退避分级、并发合并请求、无事件对象时经 `Context` 找官方 client，以及频道 ID 与非官方平台跳过
 
 > ⚠️ **需要开通群管理 API**：`/v2/groups/*` 属于 QQ 开放平台的进阶能力，未为 bot 开通时该接口会返回权限错误，群名仍回退为默认显示（插件会按 24 小时退避，不会反复请求）。
 

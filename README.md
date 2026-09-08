@@ -191,6 +191,7 @@ astrbot_plugin_message_stats/
 
 本插件现已支持以下平台：
 - **QQ（OneBot）** - 完整功能支持
+- **QQ 官方 Bot**（`qq_official` / `qq_official_webhook`） - 支持统计、头像与昵称；群名称需为 bot 开通 QQ 开放平台的群管理 API，未开通时回退为默认显示
 - **Telegram** - 完整功能支持
 - **Discord** - 完整功能支持
 - **飞书（Lark/Feishu）** - 完整功能支持
