@@ -56,7 +56,7 @@ def _install_feature_methods(*feature_classes):
     return decorator
 
 
-@register("astrbot_plugin_message_stats", "xiaoruange39", "群发言统计插件", "2.2.3")
+@register("astrbot_plugin_message_stats", "xiaoruange39", "群发言统计插件", "2.2.4")
 @_install_feature_methods(WebPanelMixin, StatsMixin, RankingMixin, HelpMixin)
 class MessageStatsPlugin(Star):
     """群发言统计插件
@@ -621,8 +621,8 @@ class MessageStatsPlugin(Star):
             official_avatar = official_avatar_url(event, user_id)
             if official_avatar:
                 avatar_url = official_avatar
-        await self._cache_group_name(event, group_id, snapshot.group_name)
-        await self._record_message_stats(group_id, user_id, nickname, snapshot.group_name, avatar_url, is_sticker=is_sticker)
+        group_name = await self._cache_group_name(event, group_id, snapshot.group_name)
+        await self._record_message_stats(group_id, user_id, nickname, group_name or snapshot.group_name, avatar_url, is_sticker=is_sticker)
     
     # ========== 排行榜命令 ==========
 

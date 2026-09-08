@@ -1,5 +1,19 @@
 # 更新日志
 
+## v2.2.4 (2026-09-08)
+
+### ✨ 新功能
+- **QQ 官方 Bot 群名称支持**：`qq_official` / `qq_official_webhook` 平台的排行榜、里程碑卡片和 Web 面板不再显示 `群{openid}`，改为真实群名。官方群消息负载只带 `group_openid`、不带群名，插件改为反查官方 OpenAPI `/v2/groups/{group_openid}/info`（实现参考 astrbot_plugin_qqadmin_official）
+
+### 🔧 技术改进
+- `utils/qq_official_helper.py` 新增 `fetch_official_group_name()`：借 botpy 的 `Route` + 适配器 client 已鉴权的 HTTP 客户端发请求；`client.api` 在调用时才读，避免 webhook 适配器登录后替换 `client.api`/`client.http` 导致拿到未鉴权的旧实例
+- 查询结果带 TTL 缓存（命中 1 小时）与失败退避（网络故障 5 分钟、权限被拒 24 小时），并对同群并发查询加锁，避免每条消息都打一次请求；请求单独设 8 秒超时，不受 webhook 适配器 300 秒超时影响
+- 只对形如官方群 openid 的 ID 发起查询，频道消息（`group_id` 是数字 `channel_id`）直接跳过
+- `_cache_group_name()` 改为返回解析出的群名，记录发言时一并写入群数据文件；`_get_group_name()` 在 PlatformHelper 取不到时补一次官方 OpenAPI 查询，覆盖定时推送/里程碑自动推送这类无事件对象的场景
+- 新增 `tests/test_qq_official_group_name.py`，覆盖缓存命中、失败退避分级、并发合并请求、频道 ID 与非官方平台跳过
+
+> ⚠️ **需要开通群管理 API**：`/v2/groups/*` 属于 QQ 开放平台的进阶能力，未为 bot 开通时该接口会返回权限错误，群名仍回退为默认显示（插件会按 24 小时退避，不会反复请求）。
+
 ## v2.2.3 (2026-08-22)
 
 ### ✨ 新功能

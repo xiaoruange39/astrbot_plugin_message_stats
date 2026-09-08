@@ -15,6 +15,7 @@ from .exception_handlers import (
 )
 from .models import GroupInfo, UserData
 from .platform_helper import PlatformHelper
+from .qq_official_helper import fetch_official_group_name
 from .validators import Validators
 from .group_id_utils import extract_numeric_group_id, is_placeholder_group_name, normalize_group_id
 
@@ -184,6 +185,9 @@ class StatsMixin:
         Args:
             event: 消息事件对象（可为 None，此时尝试从 context 获取 API 客户端）
             group_id: 群组ID
+
+        Returns:
+            解析出的群名称，取不到时返回 None
         """
         try:
             group_id_str = str(group_id)
@@ -191,10 +195,17 @@ class StatsMixin:
             if not group_name:
                 group_name = extract_group_name_from_event(event)
 
-            self._remember_group_name(group_id_str, group_name)
+            if not group_name:
+                # QQ 官方 Bot：群消息负载不带群名，只能反查官方 OpenAPI（内部带缓存）
+                group_name = await fetch_official_group_name(
+                    group_id_str, event=event, context=self.context
+                )
+
+            return self._remember_group_name(group_id_str, group_name)
 
         except (AttributeError, KeyError, TypeError, RuntimeError) as e:
             self.logger.debug(f"缓存群组名称失败: {e}")
+            return None
 
     async def _collect_group_unified_msg_origins(self):
         """收集所有群组的unified_msg_origin（从缓存中获取）"""
@@ -653,6 +664,14 @@ class StatsMixin:
                 numeric_group_id = extract_numeric_group_id(group_id_str)
                 if numeric_group_id and numeric_group_id != group_id_str:
                     group_name = await helper.get_group_name(numeric_group_id)
+            remembered_group_name = self._remember_group_name(group_id_str, group_name)
+            if remembered_group_name:
+                return remembered_group_name
+
+            # QQ 官方 Bot 没有 OneBot 那套 get_group_info，改走官方 OpenAPI
+            group_name = await fetch_official_group_name(
+                group_id_str, event=event, context=self.context
+            )
             remembered_group_name = self._remember_group_name(group_id_str, group_name)
             if remembered_group_name:
                 return remembered_group_name
