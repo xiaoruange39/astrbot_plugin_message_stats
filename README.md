@@ -104,6 +104,8 @@ git clone https://github.com/xiaoruange39/astrbot_plugin_message_stats.git
 | `theme_switch_light_time` | string | `06:00` | 浅色主题开始时间，格式 HH:MM |
 | `theme_switch_dark_time` | string | `18:00` | 深色主题开始时间，格式 HH:MM |
 | `rand` | int | `20` | 排行榜显示人数（1-100） |
+| `rank_trend_enabled` | bool | `true` | 是否显示排行榜跨周期涨跌、名次变化和总榜近期趋势 |
+| `rank_trend_days` | int | `7` | 总榜近期趋势统计天数（2-30） |
 | `render_mode` | string | `playwright` | 排行榜渲染方式：`playwright`（本地 Chromium 图片）、`t2i`（AstrBot 文转图服务）、`text`（纯文字）、`pdf`（本地 Chromium 导出 PDF 文件，外观与图片一致）。图片模式下 playwright/t2i 自动互相降级，均失败回退文字；pdf 生成失败自动降级为图片/文字 |
 | `detailed_logging_enabled` | bool | `true` | 是否开启详细日志记录 |
 | `timer_enabled` | bool | `false` | 是否启用定时推送排行榜功能 |

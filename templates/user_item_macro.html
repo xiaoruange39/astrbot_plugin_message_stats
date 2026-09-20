@@ -12,6 +12,9 @@
                 {% endif %}
             </div>
             <div class="date">最近发言: {{ item_data.safe_content.last_date }}</div>
+            {% if item_data.trend_label %}
+            <div class="trend-badge trend-{{ item_data.trend_type or 'flat' }}">{{ item_data.trend_label }}</div>
+            {% endif %}
         </div>
         <div class="stats">
             <div class="count">{{ item_data.total }} 次</div>

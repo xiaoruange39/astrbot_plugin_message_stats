@@ -289,6 +289,9 @@ class UserData:
     display_title_color: Optional[str] = None
     # 时间段内的发言数（运行时属性，仅用于图片生成，不会持久化到文件）
     display_total: Optional[int] = None
+    # 排行榜趋势标签（运行时属性，仅用于文字/图片展示，不会持久化到文件）
+    display_trend_label: Optional[str] = None
+    display_trend_type: Optional[str] = None
 
 
 
@@ -524,6 +527,8 @@ class PluginConfig:
         self.theme_switch_times = {"light": "06:00", "dark": "18:00"}  # 浅色/深色主题切换时间
         self.is_admin_restricted = 0
         self.rand = 20
+        self.rank_trend_enabled = True
+        self.rank_trend_days = 7
         self.if_send_pic = 1
         self.render_mode = "playwright"  # 渲染方式: playwright / t2i / text
         self.detailed_logging_enabled = True  # 默认开启详细日志，便于调试
@@ -620,6 +625,8 @@ class PluginConfig:
             "theme_switch_dark_time": self.theme_switch_times.get("dark", "18:00"),
             "is_admin_restricted": self.is_admin_restricted,
             "rand": self.rand,
+            "rank_trend_enabled": self.rank_trend_enabled,
+            "rank_trend_days": self.rank_trend_days,
             "if_send_pic": self.if_send_pic,
             "detailed_logging_enabled": self.detailed_logging_enabled,
             "timer_tasks": [task.to_dict() for task in self.timer_tasks],
@@ -698,6 +705,11 @@ class PluginConfig:
         }
         config.is_admin_restricted = data.get("is_admin_restricted", 0)
         config.rand = data.get("rand", 20)
+        config.rank_trend_enabled = bool(data.get("rank_trend_enabled", True))
+        try:
+            config.rank_trend_days = max(2, min(30, int(data.get("rank_trend_days", 7))))
+        except (TypeError, ValueError):
+            config.rank_trend_days = 7
         config.if_send_pic = if_send_pic
         config.render_mode = str(data.get("render_mode", config.render_mode))
         config.detailed_logging_enabled = data.get("detailed_logging_enabled", True)

@@ -374,6 +374,27 @@
             margin-top: 2px;
         }
 
+        .trend-badge {
+            font-size: 12px;
+            color: #a89888;
+            margin-top: 4px;
+            font-weight: 700;
+            line-height: 1.35;
+            text-align: left;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .trend-up,
+        .trend-new {
+            color: #7bd88f;
+        }
+
+        .trend-down {
+            color: #ff8a80;
+        }
+
         /* ====== Footer ====== */
         .footer {
             text-align: center;
@@ -433,6 +454,9 @@
                         {% endif %}
                     </div>
                     <div class="user-meta">最近发言: {{ item.last_date }}</div>
+                    {% if item.trend_label %}
+                    <div class="trend-badge trend-{{ item.trend_type or 'flat' }}">{{ item.trend_label }}</div>
+                    {% endif %}
                 </div>
 
                 <!-- Stats -->

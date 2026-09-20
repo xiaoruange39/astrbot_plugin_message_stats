@@ -1528,6 +1528,8 @@ class ImageGenerator:
                 'avatar_url': self._get_avatar_url(user, user.nickname, self._current_group_info),
                 'total': user_messages,
                 'percentage': (user_messages / total_messages * 100) if total_messages > 0 else 0,
+                'trend_label': getattr(user, 'display_trend_label', None),
+                'trend_type': getattr(user, 'display_trend_type', None),
                 'fill_ratio': (user_messages / max_messages * 100) if max_messages > 0 else 0,
                 'last_date': user.last_date or "未知",
                 'is_current_user': is_current_user,
@@ -1548,6 +1550,8 @@ class ImageGenerator:
                     'avatar_url': self._get_avatar_url(current_user_data, current_user_data.nickname, self._current_group_info),
                     'total': current_user_messages,
                     'percentage': (current_user_messages / total_messages * 100) if total_messages > 0 else 0,
+                    'trend_label': getattr(current_user_data, 'display_trend_label', None),
+                    'trend_type': getattr(current_user_data, 'display_trend_type', None),
                     'last_date': current_user_data.last_date or "未知",
                     'is_current_user': True,
                     'is_separator': True,
@@ -1736,6 +1740,14 @@ class ImageGenerator:
         safe_nickname = html.escape(safe_content['nickname'])
         safe_avatar_url = html.escape(safe_content['avatar_url'])
         safe_last_date = html.escape(safe_content['last_date'])
+        safe_trend_label = html.escape(str(item_data.get('trend_label') or ""))
+        safe_trend_type = html.escape(str(item_data.get('trend_type') or "flat"))
+        trend_color = {
+            "up": "#16A34A",
+            "new": "#16A34A",
+            "down": "#DC2626",
+            "flat": "#6B7280",
+        }.get(item_data.get("trend_type"), "#6B7280")
         safe_separator_style = html.escape(styles['separator'])
         safe_rank_color = html.escape(styles['rank_color'])
         safe_avatar_border = html.escape(styles['avatar_border'])
@@ -1760,6 +1772,7 @@ class ImageGenerator:
             '        <div class="name-date">',
             f'            <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;"><span class="nickname" style="font-size:24px;font-weight:600;color:#1F2937;line-height:1.3;">{safe_nickname}</span>{user_title_html}</div>',
             f'            <div class="date" style="color:#6B7280;font-size:15px;">最近发言: {safe_last_date}</div>',
+            f'            <div class="trend-badge trend-{safe_trend_type}" style="color:{trend_color};font-size:12px;font-weight:700;margin-top:3px;max-width:100%;line-height:1.35;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">{safe_trend_label}</div>' if safe_trend_label else '',
             '        </div>',
             '        <div class="stats">',
             f'            <div class="count">{item_data["total"]} 次</div>',
@@ -2605,4 +2618,3 @@ class ImageGenerator:
             self.logger.warning(f"加载用户条目宏模板失败: {e}")
         
         return None
-

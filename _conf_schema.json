@@ -53,6 +53,23 @@
       "step": 1
     }
   },
+  "rank_trend_enabled": {
+    "type": "bool",
+    "description": "显示排行榜趋势",
+    "hint": "开启后显示周期榜环比涨跌、名次变化，以及总榜近期活跃趋势",
+    "default": true
+  },
+  "rank_trend_days": {
+    "type": "int",
+    "description": "总榜趋势统计天数",
+    "hint": "总发言排行榜用于判断近期活跃趋势的天数，默认近7天",
+    "default": 7,
+    "slider": {
+      "min": 2,
+      "max": 30,
+      "step": 1
+    }
+  },
   "render_mode": {
     "type": "string",
     "description": "图片渲染方式",
