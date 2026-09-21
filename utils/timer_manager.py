@@ -13,7 +13,7 @@ import os
 import asyncio
 import re
 import json
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any
 from enum import Enum
 from pathlib import Path
@@ -780,6 +780,7 @@ class TimerManager:
         
         # 根据排行榜类型筛选数据
         rank_type = self._parse_rank_type(rank_type_value or config.timer_rank_type)
+        effective_rank_type = rank_type
         rank_title = self._generate_title(rank_type)
         filtered_data = await self._filter_data_by_rank_type(group_data, rank_type)
         if not filtered_data:
@@ -791,6 +792,7 @@ class TimerManager:
                     if count > 0:
                         filtered_data.append((user, count))
                 if filtered_data:
+                    effective_rank_type = RankType.YESTERDAY
                     rank_title = self._generate_title(RankType.YESTERDAY)
                     self.logger.info(f"群组 {group_id} 今日无数据，回退到昨日({yesterday})数据")
                 else:
@@ -801,10 +803,11 @@ class TimerManager:
                 return False
         else:
             self.logger.info(f"群组 {group_id} 定时推送使用{rank_title}")
-        
+
         # 排序数据
         filtered_data.sort(key=lambda x: x[1], reverse=True)
-        
+        self._apply_rank_trend_labels(group_data, filtered_data, effective_rank_type, config)
+
         # 限制数量
         limited_data = filtered_data[:config.rand]
         users_for_rank = []
@@ -1164,7 +1167,178 @@ class TimerManager:
         else:
             # 总榜不需要时间段过滤
             return None, None
-    
+
+    def _apply_rank_trend_labels(
+        self,
+        group_data: List[UserData],
+        filtered_data: List[tuple],
+        rank_type: RankType,
+        config,
+    ) -> None:
+        """为定时推送排行榜填充与手动榜一致的趋势文案。"""
+        for user in group_data:
+            user.display_trend_label = None
+            user.display_trend_type = None
+
+        if not filtered_data or not getattr(config, "rank_trend_enabled", True):
+            return
+
+        if rank_type == RankType.TOTAL:
+            trend_days = getattr(config, "rank_trend_days", 7)
+            try:
+                trend_days = max(2, min(30, int(trend_days)))
+            except (TypeError, ValueError):
+                trend_days = 7
+            self._apply_total_rank_trends(filtered_data, trend_days)
+            return
+
+        current_date = datetime.now().date()
+        start_date, end_date = self._get_time_period_for_rank_type(
+            rank_type,
+            current_date,
+        )
+        if not start_date or not end_date:
+            return
+
+        comparison_label = {
+            RankType.DAILY: "昨天",
+            RankType.YESTERDAY: "前天",
+            RankType.WEEKLY: "上周",
+            RankType.MONTHLY: "上月",
+            RankType.YEARLY: "去年",
+            RankType.LAST_YEAR: "前年",
+        }.get(rank_type, "上一周期")
+
+        previous_start, previous_end = self._get_previous_period_range(
+            start_date,
+            end_date,
+        )
+        previous_rank = self._calculate_period_rank_sync(
+            group_data,
+            previous_start,
+            previous_end,
+        )
+        previous_rank.sort(key=lambda item: item[1], reverse=True)
+        previous_counts = {user.user_id: count for user, count in previous_rank}
+        previous_ranks = {
+            user.user_id: index + 1
+            for index, (user, _) in enumerate(previous_rank)
+        }
+
+        for index, (user, current_count) in enumerate(filtered_data):
+            previous_count = previous_counts.get(user.user_id, 0)
+            if previous_count <= 0:
+                user.display_trend_label = f"相比{comparison_label}新上榜"
+                user.display_trend_type = "new"
+                continue
+
+            count_label, trend_type = self._format_count_delta_label(
+                current_count,
+                previous_count,
+                comparison_label,
+            )
+            rank_label = self._format_rank_delta_label(
+                index + 1,
+                previous_ranks.get(user.user_id),
+            )
+            user.display_trend_label = " · ".join(
+                part for part in (count_label, rank_label) if part
+            )
+            user.display_trend_type = trend_type
+
+    @staticmethod
+    def _get_previous_period_range(
+        start_date: date,
+        end_date: date,
+    ) -> tuple[date, date]:
+        period_days = (end_date - start_date).days + 1
+        previous_end = start_date - timedelta(days=1)
+        previous_start = previous_end - timedelta(days=period_days - 1)
+        return previous_start, previous_end
+
+    def _calculate_period_rank_sync(
+        self,
+        group_data: List[UserData],
+        start_date: date,
+        end_date: date,
+    ) -> List[tuple]:
+        ranked = []
+        for user in group_data:
+            count = user.get_message_count_in_period(start_date, end_date)
+            if count > 0:
+                ranked.append((user, count))
+        return ranked
+
+    @staticmethod
+    def _format_count_delta_label(
+        current_count: int,
+        previous_count: int,
+        comparison_label: str = "上一周期",
+    ) -> tuple[str, str]:
+        delta = current_count - previous_count
+        if delta == 0:
+            return f"相比{comparison_label}持平", "flat"
+
+        percent = round(abs(delta) / previous_count * 100)
+        if delta > 0:
+            return f"相比{comparison_label}增长{percent}%", "up"
+        return f"相比{comparison_label}下降{percent}%", "down"
+
+    @staticmethod
+    def _format_rank_delta_label(
+        current_rank: int,
+        previous_rank: Optional[int],
+    ) -> str:
+        if not previous_rank:
+            return ""
+
+        delta = previous_rank - current_rank
+        if delta > 0:
+            return f"名次上升{delta}位"
+        if delta < 0:
+            return f"名次下降{abs(delta)}位"
+        return "名次不变"
+
+    def _apply_total_rank_trends(
+        self,
+        filtered_data: List[tuple],
+        trend_days: int,
+    ) -> None:
+        today = date.today()
+        for user, _ in filtered_data:
+            daily_counts = [
+                user.get_message_count_in_period(
+                    today - timedelta(days=offset),
+                    today - timedelta(days=offset),
+                )
+                for offset in range(trend_days - 1, -1, -1)
+            ]
+            trend_type = self._classify_recent_activity_trend(daily_counts)
+            user.display_trend_type = trend_type
+            user.display_trend_label = {
+                "up": "近期趋势：上升",
+                "down": "近期趋势：下降",
+                "flat": "近期趋势：平稳",
+            }.get(trend_type)
+
+    @staticmethod
+    def _classify_recent_activity_trend(daily_counts: List[int]) -> str:
+        if len(daily_counts) < 2 or sum(daily_counts) == 0:
+            return "flat"
+
+        midpoint = len(daily_counts) // 2
+        early = daily_counts[:midpoint]
+        recent = daily_counts[-midpoint:]
+        early_avg = sum(early) / len(early)
+        recent_avg = sum(recent) / len(recent)
+        threshold = max(1.0, (sum(daily_counts) / len(daily_counts)) * 0.2)
+
+        if recent_avg - early_avg > threshold:
+            return "up"
+        if early_avg - recent_avg > threshold:
+            return "down"
+        return "flat"
+
     def _generate_title(self, rank_type: RankType) -> str:
         """生成标题
         
